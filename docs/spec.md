@@ -9,7 +9,7 @@ See `docs/security-model.md` for the reasoning behind these rules, the trust ass
 A Tranfr cell is locked by a single custom lock script with two independent unlock paths:
 
 - **OWNER path**: unconditional. The owner can spend the cell at any time, for any reason (reclaim, renew, change recipient). No time check is ever applied to this path.
-- **RECIPIENT path**: conditional on a deadline embedded in the cell's own lock args. The recipient can only spend the cell once the transaction's declared `since` value for each of its Tranfr inputs is at or past that deadline (§5).
+- **RECIPIENT path**: conditional on a deadline embedded in the cell's own lock args. The recipient can only spend the cell once the transaction's declared `since` value for each of its Tranfr inputs is at or past that deadline (§5). On a **typed** cell (one carrying a type script, such as a UDT), the recipient keeps the tokens but the cell's CKB capacity must be returned to the owner (§5.1); a plain CKB cell is taken in full, as before.
 
 There is no separate on-chain "heartbeat" transaction type. Renewal is an ordinary owner-path spend that recreates the cell with a new deadline (and optionally a new recipient).
 
@@ -119,12 +119,29 @@ The `since` value is chosen by whoever builds the transaction, but consensus onl
 
 The comparison is implemented once in `reference/since-cmp-rs` (Rust, used by the contract) and once in `sdk/src/since-cmp.ts` (TypeScript, used by the SDK). Both are ports of `epoch_number_with_fraction_cmp` and `check_since` from `nervosnetwork/ckb-system-scripts`, with the same test suite.
 
+### 5.1 Typed cells: the capacity returns to the owner
+
+A typed cell — one carrying a type script, for example a UDT — needs CKB capacity only so the token cell can exist on chain. Without this rule, a recipient claiming such a cell would take both the tokens and all of that backing CKB, so an owner who deliberately left only tokens would also be giving away the capacity.
+
+On the **recipient path only**, after the signature and `since` gate pass, the script:
+
+1. sums the capacity of every input **in this script group** that carries a type script (`typed_input_capacity`), as a `u128`;
+2. if that sum is zero (no typed input — a plain claim), the rule is satisfied and the recipient takes everything, exactly as before;
+3. otherwise sums the capacity of every **output** whose lock hash equals `owner_lock_hash` (`owner_refund`), as a `u128`, and requires `owner_refund >= typed_input_capacity`, failing with `ERR_INSUFFICIENT_OWNER_REFUND` otherwise.
+
+Notes and limits:
+
+- **The owner path is unchanged.** The owner can still spend a typed cell wholesale — capacity and tokens together — with no refund (§4.1 of the security model). This rule applies to the recipient path only.
+- **The lock enforces the capacity refund only.** It does not check the token output itself — not the type script carried forward, the amount, or that the tokens reach the recipient. Preserving the tokens into a recipient-locked output is the transaction builder's responsibility (the SDK's `buildRecoveryClaim`), exactly as the lock leaves every other output shape to the builder (§6).
+- **Lock hashes are compared, not reconstructed.** "Outputs locked to the owner" means outputs whose full 32-byte lock-script hash equals the stored `owner_lock_hash`. This is one syscall per output (`load_cell_lock_hash`) and needs no knowledge of the owner's lock structure — one of the reasons the args keep the full 32-byte hash rather than a 20-byte pubkey hash.
+- **The recipient funds the new token cell.** Because the whole capacity returns to the owner, the recipient must bring fresh capacity for the token cell they keep. `buildRecoveryClaim` does this from the recipient's own cells.
+
 ## 6. Transaction-level behaviour
 
 - **Script groups.** CKB runs a lock script once per group of inputs sharing the same lock script, args included. One witness at the group's first input covers the whole group, as with the standard secp256k1 lock.
 - **Every input's `since` is checked.** On the recipient path the script loops over every input in the group (`ERR_LOAD_SINCE` if that syscall fails). Checking only the first input would let a recipient pair a mature input with a second unmatured cell sharing the same lock, and claim it early.
 - **Owner path ignores `since`.** Any `since` (none, relative, other metric) is accepted on the owner path, including on a cell whose `deadline_since` is malformed.
-- **Outputs are unconstrained.** The lock checks authorization only. It doesn't constrain where outputs go, whether a renewed cell keeps the same owner, or what happens to a type script on the cell. Those are the transaction builder's responsibility (`docs/security-model.md` §5).
+- **Outputs are almost unconstrained.** The lock checks authorization only, with one exception: on the recipient path, a typed input forces enough capacity to outputs locked to `owner_lock_hash` (§5.1). It otherwise doesn't constrain where outputs go, whether a renewed cell keeps the same owner, or what happens to a type script on the cell. Those are the transaction builder's responsibility (`docs/security-model.md` §5).
 - **Replay.** The signature commits to the transaction hash, so it can't be moved to another transaction or another cell.
 
 ## 7. Error codes
@@ -147,6 +164,8 @@ The comparison is implemented once in `reference/since-cmp-rs` (Rust, used by th
 | 13 | `ERR_SECP_PARSE_SIGNATURE` | Signature bytes invalid (bad `r`/`s` or recovery id). |
 | 14 | `ERR_SECP_RECOVER_PUBKEY` | Public key recovery failed. |
 | 15 | `ERR_LOAD_SINCE` | Could not load an input's `since`. |
+| 16 | `ERR_INSUFFICIENT_OWNER_REFUND` | RECIPIENT mode, typed cell: outputs locked to `owner_lock_hash` don't total the summed capacity of the typed inputs (§5.1). |
+| 17 | `ERR_LOAD_CELL` | Could not load a cell's capacity, type hash, or lock hash while checking the owner refund. |
 
 The recipient path checks the signature before the `since` gate, so a wrong signer always gets 6, even before the deadline.
 
@@ -155,10 +174,10 @@ The recipient path checks the signature before the `since` gate, so a wrong sign
 | Field | Value |
 |---|---|
 | Network | CKB Testnet (Pudge), genesis `0x10639e0895502b5688a6be8cf69460d76541bfa4821629d86d62ba0aae3f9606` |
-| `code_hash` | `0xffc6b1c122037a97c18878f583ab789ea7f6cf3a1febc1e02e4fd9f36c442bfd` (Type ID) |
+| `code_hash` | `0x258d2a85b854c9a1ae9824a2c60aa88e32a95d81a9386f734275629918dd757a` (Type ID) |
 | `hash_type` | `type` |
-| Cell dep | `0x0d0eb86d886c4c0f0981489498c68aba8bc914a946bbbf11ceec8c13ce442c08` index `0`, `dep_type = code` |
-| Binary data hash | `0x24a5f576896042fa4583b9536189edfd21731c3d82f29ba28395a8145d77da3d` |
+| Cell dep | `0xd0e66d4f3c401a949b8baa1f15fd11fcbdb5625542b58ff20b40bfdaac7969a6` index `0`, `dep_type = code` |
+| Binary data hash | `0xf580ce5698d42198a615c4f582e4d24fd39fbb1109460980a070babe750b0a59` |
 
 Because the deployment uses Type ID, cells reference the script by its type hash, not its code. Whoever controls the code cell can replace the binary for every Tranfr cell. This is acceptable for a testnet proof of concept and must not carry over to mainnet as-is (`docs/security-model.md` §2.1). Details and reproduction steps: `docs/deployment.md`.
 
@@ -167,4 +186,4 @@ Because the deployment uses Type ID, cells reference the script by its type hash
 - No multi-recipient or threshold recovery: `recipient_lock_hash` is a single value, not a list or Merkle root.
 - No signer types other than `secp256k1_blake160_sighash_all` for owner or recipient (§3.1).
 - No on-chain distinction between "heartbeat" and "recipient change": both are owner-path spends producing a new cell. The distinction exists only in the SDK (`renewTranfr`).
-- No restriction on type scripts on Tranfr cells: the lock ignores the type field. The SDK preserves a cell's type script and data when spending it, but only creates plain CKB cells (`docs/security-model.md` §5.2).
+- The lock mostly ignores the type field, with the single exception of the recipient-path capacity refund for typed cells (§5.1); it does not inspect the token type, amount, or destination. The SDK preserves a cell's type script and data when spending it (splitting the capacity and tokens on a recipient claim), but only creates plain CKB cells (`docs/security-model.md` §5.2).

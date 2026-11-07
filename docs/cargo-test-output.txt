@@ -1,0 +1,95 @@
+# cargo test output — Tranfr lock (recorded 2026-11-05T20:49:22Z)
+# Command: cargo test (workspace root)
+# Totals: 48 tests — 11 since-cmp-rs + 26 integration (tests/) + 11 tranfr-lock unit.
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running unittests src/lib.rs (target/debug/deps/since_cmp-1b63e6dad8f20812)
+
+running 11 tests
+test tests::epoch_cmp_by_epoch_number_alone ... ok
+test tests::epoch_cmp_same_epoch_different_denominators_equal_ratio ... ok
+test tests::epoch_cmp_raw_port_does_not_normalize_zero_over_zero_by_itself ... ok
+test tests::epoch_cmp_same_epoch_different_denominators_unequal_ratio ... ok
+test tests::recipient_path_accepts_valid_absolute_epoch_fraction_past_deadline ... ok
+test tests::recipient_path_rejects_degenerate_zero_length_early_claim ... ok
+test tests::recipient_path_rejects_relative_flag_even_if_numerically_far_enough ... ok
+test tests::recipient_path_rejects_wrong_metric_on_either_side ... ok
+test tests::since_value_satisfied_epoch_fraction_boundary_inclusive ... ok
+test tests::since_value_satisfied_non_fraction_metric_uses_plain_integer_compare ... ok
+test tests::since_value_satisfied_requires_matching_flags ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/tests-f515af679d8239a5)
+
+running 26 tests
+test tests::adv_extra_group_witnesses_are_signed_over ... ok
+test tests::adv_malformed_witness_and_args_never_succeed ... ok
+test tests::adv_signature_is_bound_to_the_transaction ... ok
+test tests::recipient_plain_claim_unaffected_by_refund_rule ... ok
+test tests::adv_owner_succeeds_even_with_malformed_deadline ... ok
+test tests::adv_owner_equals_recipient_still_gated_on_recipient_path ... ok
+test tests::recipient_mixed_inputs_refund_only_the_typed_part ... ok
+test tests::recipient_typed_claim_with_full_refund_passes ... ok
+test tests::recipient_typed_claim_with_no_refund_fails ... ok
+test tests::recipient_typed_claim_with_underpaid_refund_fails ... ok
+test tests::test_owner_rejects_wrong_signer ... ok
+test tests::test_owner_succeeds_with_no_since ... ok
+test tests::adv_mode_byte_cannot_steal_the_other_paths_signature ... ok
+test tests::test_recipient_rejects_relative_since ... ok
+test tests::adv_owner_succeeds_before_at_and_after_deadline_and_with_any_since ... ok
+test tests::test_recipient_rejects_wrong_signer_even_after_deadline ... ok
+test tests::test_recipient_rejects_malformed_deadline ... ok
+test tests::test_reject_invalid_witness_lock_length ... ok
+test tests::test_reject_invalid_args_length ... ok
+test tests::test_reject_missing_or_empty_witness ... ok
+test tests::test_reject_unknown_mode_byte ... ok
+test tests::test_recipient_checks_every_input_in_the_group ... ok
+test tests::adv_tampered_or_malformed_signatures_fail_cleanly ... ok
+test tests::test_recipient_succeeds_at_and_after_deadline ... ok
+test tests::test_recipient_rejects_before_deadline ... ok
+test tests::adv_boundary_fraction_edge_cases ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s
+
+     Running unittests src/lib.rs (target/debug/deps/tranfr_lock-d9e181a43aa55a78)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/tranfr_lock-00cf553fe874f174)
+
+running 11 tests
+test crypto::tests::ckb_blake2b_matches_independent_python_reference ... ok
+test tests::recipient_since_gate ... ok
+test tests::test_cross_language_golden_vectors_args ... ok
+test tests::test_cross_language_golden_vectors_witness ... ok
+test tests::test_parse_tranfr_args_invalid_len ... ok
+test tests::test_parse_tranfr_args_valid ... ok
+test tests::test_parse_tranfr_witness_lock_unknown_mode ... ok
+test tests::test_parse_tranfr_witness_lock_invalid_len ... ok
+test tests::test_parse_tranfr_witness_lock_valid ... ok
+test crypto::tests::recover_lock_hash_matches_signer_for_a_real_signature ... ok
+test crypto::tests::recover_lock_hash_rejects_wrong_signature ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests since_cmp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests tests
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests tranfr_lock
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

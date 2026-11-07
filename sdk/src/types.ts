@@ -105,8 +105,16 @@ export interface ClaimTranfrParams {
   cell: ccc.Cell;
   /** Private key matching the cell's recipient_lock_hash, used to sign the RECIPIENT-mode witness. */
   recipientPrivateKey: ccc.HexLike;
-  /** Destination lock for the claimed capacity. Defaults to the recipient private key's own secp256k1 lock. */
+  /** Destination lock for the claimed tokens (typed cell) or capacity (plain cell). Defaults to the recipient private key's own secp256k1 lock. */
   toLock?: ccc.ScriptLike;
+  /**
+   * The owner's lock script (the owner's default-lock address). **Required when
+   * the cell carries a type script**: claiming a typed cell refunds its whole
+   * capacity to the owner (docs/spec.md §5), but only the owner's lock *hash*
+   * is stored on chain, so the matching lock can't be derived and must be
+   * supplied. The SDK checks that its hash equals the cell's `owner_lock_hash`.
+   */
+  ownerLock?: ccc.ScriptLike;
   /** Fee rate in shannons/KB. Defaults to DEFAULT_FEE_RATE. The fee is deducted from the cell's own capacity. */
   feeRate?: ccc.NumLike;
   /** Cell deps for the cell's type script, if it has one. Required in that case: they must be in the

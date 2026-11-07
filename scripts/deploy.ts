@@ -6,9 +6,13 @@ import * as ccc from "@ckb-ccc/core";
 const DEFAULT_RPC_URL = "https://testnet.ckb.dev/";
 const EXPECTED_GENESIS_HASH = "0x10639e0895502b5688a6be8cf69460d76541bfa4821629d86d62ba0aae3f9606";
 const EXPECTED_BINARY_PATH = "build/release/tranfr-lock";
-const EXPECTED_SIZE = 108600;
-const EXPECTED_SHA256 = "866da13128580f22d9bcf713ffd1f2fb6286bf512e2870744ccdb9d7288feb0e";
-const EXPECTED_DATA_HASH = "0x24a5f576896042fa4583b9536189edfd21731c3d82f29ba28395a8145d77da3d";
+// Binary of the lock *with* the typed-cell capacity-refund rule (docs/spec.md §5.1).
+// Superseded values (pre-refund binary): size 108600,
+// sha256 866da13128580f22d9bcf713ffd1f2fb6286bf512e2870744ccdb9d7288feb0e,
+// data hash 0x24a5f576896042fa4583b9536189edfd21731c3d82f29ba28395a8145d77da3d.
+const EXPECTED_SIZE = 109992;
+const EXPECTED_SHA256 = "71e3aaa4cc0612bdc616b0ce2da5a2d7cc80a365458c2320db32ab5a0ab3dcc9";
+const EXPECTED_DATA_HASH = "0xf580ce5698d42198a615c4f582e4d24fd39fbb1109460980a070babe750b0a59";
 
 interface CliOptions {
   binaryPath: string;
@@ -86,20 +90,30 @@ function updateDeploymentDocs(params: {
   const docPath = path.resolve("docs/deployment.md");
   if (!fs.existsSync(docPath)) return;
 
+  // These target the first "## Deployment Details" table (the current
+  // deployment), which precedes the superseded table, so each non-global
+  // replace patches the live record and leaves the history alone. The labels
+  // must stay in sync with docs/deployment.md's table headers.
+  const explorer = `https://pudge.explorer.nervos.org/transaction/${params.txHash}`;
   const content = fs.readFileSync(docPath, "utf-8");
   const updated = content
+    .replace(/## Status: .*/, `## Status: DEPLOYED (Testnet) — typed-cell refund-rule binary`)
     .replace(
-      /## Status: .*/,
-      `## Status: DEPLOYED (Testnet)\n\nDeployed transaction: \`${params.txHash}\` (output index ${params.index})`
+      /\| Network \/ Genesis \| .*/,
+      `| Network / Genesis | \`${params.network}\` (\`${params.genesisHash}\`) |`
+    )
+    .replace(/\| Transaction Hash \(`tx_hash`\) \| .*/, `| Transaction Hash (\`tx_hash\`) | \`${params.txHash}\` |`)
+    .replace(/\| Output Index \| .*/, `| Output Index | \`${params.index}\` |`)
+    .replace(/\| `code_hash` \(Type ID\) \| .*/, `| \`code_hash\` (Type ID) | \`${params.codeHash}\` |`)
+    .replace(/\| `hash_type` \| .*/, `| \`hash_type\` | \`${params.hashType}\` |`)
+    .replace(
+      /\| Binary Data Hash \(`data_hash`\) \| .*/,
+      `| Binary Data Hash (\`data_hash\`) | \`${params.dataHash}\` |`
     )
     .replace(
-      /\| Network \/ genesis \| .*/,
-      `| Network / genesis | \`${params.network}\` (\`${params.genesisHash}\`) |`
-    )
-    .replace(/\| tx_hash \| .*/, `| tx_hash | \`${params.txHash}\` |`)
-    .replace(/\| index \| .*/, `| index | \`${params.index}\` |`)
-    .replace(/\| code_hash \(type id\) \| .*/, `| code_hash (type id) | \`${params.codeHash}\` |`)
-    .replace(/\| hash_type \| .*/, `| hash_type | \`${params.hashType}\` |`);
+      /\| Explorer Link \| .*/,
+      `| Explorer Link | [View on CKB Testnet Explorer](${explorer}) |`
+    );
 
   fs.writeFileSync(docPath, updated, "utf-8");
   console.log(`[+] docs/deployment.md successfully updated with deployment results.`);

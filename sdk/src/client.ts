@@ -334,9 +334,53 @@ export class TranfrClient {
       throw new Error("Recovery is not yet eligible: the embedded deadline has not passed");
     }
 
+    const recipientSigner = new ccc.SignerCkbPrivateKey(this.client, recipientPrivateKey);
     const toLock = params.toLock
       ? ccc.Script.from(params.toLock)
-      : (await new ccc.SignerCkbPrivateKey(this.client, recipientPrivateKey).getAddressObjSecp256k1()).script;
+      : (await recipientSigner.getAddressObjSecp256k1()).script;
+
+    // Plain CKB cell (no type script): the recipient takes everything, as before.
+    if (!cell.cellOutput.type) {
+      const tx = ccc.Transaction.from({
+        inputs: [
+          {
+            previousOutput: cell.outPoint,
+            cellOutput: cell.cellOutput,
+            outputData: cell.outputData,
+            since: args.deadlineSince,
+          },
+        ],
+        outputs: [{ lock: toLock, type: cell.cellOutput.type, capacity: cell.cellOutput.capacity }],
+        outputsData: [cell.outputData],
+      });
+      this.addSpendCellDeps(tx, cell, params.cellDeps);
+      return this.finalizeSingleOutputSpend(tx, cell.cellOutput.lock, UnlockMode.RECIPIENT, recipientPrivateKey, feeRate);
+    }
+
+    // Typed cell (e.g. a UDT): the lock requires the cell's whole capacity to
+    // be refunded to the owner (docs/spec.md §5). The recipient keeps the
+    // tokens in a new cell they fund from their own capacity; the owner is
+    // paid the cell's capacity back as plain CKB. Only the owner's lock *hash*
+    // is on chain, so the caller must supply the matching owner lock.
+    if (!params.ownerLock) {
+      throw new Error(
+        "Claiming a typed Tranfr cell refunds its capacity to the owner, so buildRecoveryClaim needs the owner's " +
+          "lock; pass `ownerLock` (the owner's address script). Only its hash is stored on chain, so it can't be " +
+          "derived here.",
+      );
+    }
+    const ownerLock = ccc.Script.from(params.ownerLock);
+    if (ownerLock.hash() !== args.ownerLockHash) {
+      throw new Error(
+        `The ownerLock provided (hash ${ownerLock.hash()}) does not match the cell's owner_lock_hash ` +
+          `(${args.ownerLockHash}); it cannot receive the required capacity refund`,
+      );
+    }
+
+    // The recipient's token cell: same type and data, locked to the recipient,
+    // sized to its own minimum capacity (funded below from the recipient).
+    const tokenOutput = ccc.CellOutput.from({ lock: toLock, type: cell.cellOutput.type });
+    tokenOutput.capacity = ccc.fixedPointFrom(tokenOutput.occupiedSize + ccc.bytesFrom(cell.outputData).length);
 
     const tx = ccc.Transaction.from({
       inputs: [
@@ -347,11 +391,25 @@ export class TranfrClient {
           since: args.deadlineSince,
         },
       ],
-      outputs: [{ lock: toLock, type: cell.cellOutput.type, capacity: cell.cellOutput.capacity }],
-      outputsData: [cell.outputData],
+      outputs: [
+        // Owner refund: the cell's whole capacity, returned as plain CKB.
+        { lock: ownerLock, capacity: cell.cellOutput.capacity },
+        tokenOutput,
+      ],
+      outputsData: ["0x", cell.outputData],
     });
     this.addSpendCellDeps(tx, cell, params.cellDeps);
 
-    return this.finalizeSingleOutputSpend(tx, cell.cellOutput.lock, UnlockMode.RECIPIENT, recipientPrivateKey, feeRate);
+    // Fund the recipient's token cell capacity, size the Tranfr witness so the
+    // fee estimate is exact, then add the fee (both from the recipient's own
+    // cells — the owner refund and the tokens are left whole). Finally sign the
+    // Tranfr input (RECIPIENT mode) and the recipient's funding inputs.
+    await tx.completeInputsByCapacity(recipientSigner);
+    await tx.prepareSighashAllWitness(cell.cellOutput.lock, WITNESS_LOCK_LEN, this.client);
+    await tx.completeFeeBy(recipientSigner, feeRate ?? DEFAULT_FEE_RATE);
+    await signTranfrInput(tx, this.client, cell.cellOutput.lock, UnlockMode.RECIPIENT, recipientPrivateKey);
+    await recipientSigner.signTransaction(tx);
+
+    return tx;
   }
 }

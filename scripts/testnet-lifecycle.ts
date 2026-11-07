@@ -4,10 +4,16 @@
  *
  *   TRANFR_KEYS=keys.json TRANFR_LOG=log.json tsx scripts/testnet-lifecycle.ts start
  *   TRANFR_KEYS=keys.json TRANFR_LOG=log.json tsx scripts/testnet-lifecycle.ts finish
+ *   TRANFR_KEYS=keys.json TRANFR_LOG=log.json tsx scripts/testnet-lifecycle.ts udt
  *
  * keys.json: { funder, owner, recipient }, each { privateKey, address }.
  * The funder pays for creating cells (the demo's connected wallet); owner and
- * recipient need no funds. Private keys are never written to the log.
+ * recipient need no funds for the plain (start/finish) flow. The `udt` phase is
+ * the typed-cell lifecycle (docs/spec.md §5.1): it funds the recipient once (the
+ * recipient brings capacity for the token cell, since the claim returns the
+ * cell's whole capacity to the owner), mints a testnet xUDT into a Tranfr cell,
+ * waits for the 1-epoch deadline, then claims it — refunding the capacity to the
+ * owner and the tokens to the recipient. Private keys are never written to the log.
  *
  * `start` creates three cells with a 1-epoch deadline:
  *   A: extended, then claimed by the recipient after the deadline;
@@ -59,6 +65,23 @@ const keysPath = process.env.TRANFR_KEYS;
 const logPath = process.env.TRANFR_LOG;
 if (!keysPath || !logPath) throw new Error("Set TRANFR_KEYS and TRANFR_LOG");
 const keys: Keys = JSON.parse(fs.readFileSync(keysPath, "utf8"));
+
+// Fail early with a clear message if any role is missing or malformed, instead
+// of passing an undefined key deep into CCC (an opaque "undefined is not
+// iterable"). Each role must be { privateKey: "0x…64 hex", address: "ckt1…" }.
+for (const role of ["funder", "owner", "recipient"] as const) {
+  const r = (keys as unknown as Record<string, { privateKey?: string; address?: string } | undefined>)[role];
+  if (!r || typeof r.privateKey !== "string" || typeof r.address !== "string") {
+    throw new Error(
+      `${keysPath}: "${role}" must be an object { "privateKey": "0x<64 hex>", "address": "ckt1..." }. ` +
+        `Got: ${JSON.stringify(r)}. Expected shape:\n` +
+        `  { "funder": {"privateKey":"0x..","address":"ckt1.."}, "owner": {..}, "recipient": {..} }`,
+    );
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(r.privateKey)) {
+    throw new Error(`${keysPath}: "${role}".privateKey must be a 0x-prefixed 32-byte hex string`);
+  }
+}
 
 const client = new ccc.ClientPublicTestnet();
 const tranfr = new TranfrClient({ client });
@@ -325,9 +348,125 @@ async function finish() {
   }
 }
 
+// ── UDT (typed-cell) lifecycle ───────────────────────────────────────────────
+//
+// Exercises the typed-cell claim rule (docs/spec.md §5.1): the recipient's claim
+// of a UDT-carrying Tranfr cell must refund the cell's capacity to the owner and
+// hand the recipient a new token cell they fund themselves. Uses testnet xUDT
+// minted by the funder (xUDT args = the funder's lock hash, so the funder can
+// mint). The recipient is funded once up front because — unlike the plain claim,
+// whose fee comes out of the cell — the recipient here brings fresh capacity for
+// the token cell (the whole cell capacity goes back to the owner).
+const UDT_CELL_CAPACITY = ccc.fixedPointFrom(200);
+const UDT_AMOUNT = 1_000_000n;
+const RECIPIENT_FUNDING = ccc.fixedPointFrom(300);
+
+async function udt() {
+  const log = loadLog();
+  const funder = new ccc.SignerCkbPrivateKey(client, keys.funder.privateKey);
+  const funderLockHash = (await funder.getAddressObjSecp256k1()).script.hash();
+  const xudt = await client.getKnownScript(ccc.KnownScript.XUdt);
+  const udtType = ccc.Script.from({ codeHash: xudt.codeHash, hashType: xudt.hashType, args: funderLockHash });
+  const udtCellDeps = xudt.cellDeps.map((d) => d.cellDep);
+
+  // Fund the recipient so it can pay for the token cell it keeps on claim.
+  await sendStep(
+    log,
+    "fund recipient (for UDT claim)",
+    async () => {
+      const tx = ccc.Transaction.from({
+        outputs: [{ lock: await identity(keys.recipient.privateKey), capacity: RECIPIENT_FUNDING }],
+        outputsData: ["0x"],
+      });
+      await tx.completeInputsByCapacity(funder);
+      await tx.completeFeeBy(funder);
+      return funder.sendTransaction(tx);
+    },
+    async () => ({ to: keys.recipient.address, amount: `${ccc.fixedPointToString(RECIPIENT_FUNDING)} CKB` }),
+  );
+
+  // Create a UDT-carrying Tranfr cell (mint xUDT into a Tranfr-locked output).
+  await sendStep(
+    log,
+    "create U (UDT Tranfr cell)",
+    async () => {
+      const tx = await tranfr.createTranfr({
+        ownerLock: await identity(keys.owner.privateKey),
+        recipientLock: await identity(keys.recipient.privateKey),
+        capacity: UDT_CELL_CAPACITY,
+        durationEpochs: DURATION_EPOCHS,
+      });
+      tx.outputs[0].type = udtType;
+      tx.outputsData[0] = ccc.hexFrom(ccc.numLeToBytes(UDT_AMOUNT, 16));
+      tx.addCellDeps(udtCellDeps);
+      await tx.completeInputsByCapacity(funder);
+      await tx.completeFeeBy(funder);
+      return funder.sendTransaction(tx);
+    },
+    async (txHash) => {
+      log.cells.U = { txHash, index: 0 };
+      const cell = await liveCell(log, "U");
+      return { amount: UDT_AMOUNT.toString(), deadline: deadlineOf(cell), type: "xUDT" };
+    },
+  );
+
+  // Wait for the 1-epoch deadline.
+  const claimStep = "recipient claim U (typed: capacity to owner, tokens to recipient)";
+  if (!log.pending[claimStep] && !done(log, claimStep)) {
+    for (;;) {
+      const u = await tranfr.getTranfrStatus(log.cells.U);
+      if (u.isClaimable) break;
+      console.log(`${new Date().toISOString()} waiting: U ${u.epochsRemaining} epoch(s) left`);
+      await new Promise((resolve) => setTimeout(resolve, 60_000));
+    }
+  }
+
+  let claimDetail: Record<string, string> = {};
+  await sendStep(
+    log,
+    claimStep,
+    async () => {
+      const cellU = await liveCell(log, "U");
+      const ownerLock = await identity(keys.owner.privateKey);
+      const recipientLock = await identity(keys.recipient.privateKey);
+      const claim = await tranfr.buildRecoveryClaim({
+        cell: cellU,
+        recipientPrivateKey: keys.recipient.privateKey,
+        ownerLock,
+        cellDeps: udtCellDeps,
+      });
+      // Output 0: the cell's capacity refunded to the owner as plain CKB.
+      if (!claim.outputs[0].lock.eq(ownerLock) || claim.outputs[0].type) {
+        throw new Error("claim output 0 is not the plain owner refund");
+      }
+      // Output 1: the tokens, to the recipient.
+      if (!claim.outputs[1].lock.eq(recipientLock) || !claim.outputs[1].type?.eq(udtType)) {
+        throw new Error("claim output 1 is not the recipient's token cell");
+      }
+      claimDetail = {
+        deadline: deadlineOf(cellU),
+        inputSince: `0x${claim.inputs[0].since.toString(16)}`,
+        ownerRefund: `${ccc.fixedPointToString(claim.outputs[0].capacity)} CKB to ${keys.owner.address}`,
+        recipientTokens: `${ccc.udtBalanceFrom(claim.outputsData[1])} to ${keys.recipient.address}`,
+        witnessMode: decodeWitnessLock(claim.getWitnessArgs(0)!.lock!).mode === 1 ? "RECIPIENT" : "OWNER",
+      };
+      return client.sendTransaction(claim);
+    },
+    async () => claimDetail,
+  );
+
+  const step = "status U after spend (expected: not live)";
+  if (!done(log, step)) {
+    const gone = await expectFailure(() => tranfr.getTranfrStatus(log.cells.U));
+    if (!gone) throw new Error("U still shows as live after being spent");
+    record(log, step, { error: gone });
+  }
+}
+
 const phase = process.argv[2];
 if (phase === "start") await start();
 else if (phase === "finish") await finish();
-else throw new Error("usage: testnet-lifecycle.ts start|finish");
+else if (phase === "udt") await udt();
+else throw new Error("usage: testnet-lifecycle.ts start|finish|udt");
 // The CCC client keeps its RPC transport open; exit explicitly once the phase is done.
 process.exit(0);

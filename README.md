@@ -44,8 +44,12 @@ Everything else is built from these two paths:
   separate renewal mechanism; it's just an owner spend. By default the SDK
   renews for the cell's own period (at least 90 days), so a heartbeat never
   silently shortens a longer period.
-- **Reclaim**: the owner spends the cell anywhere, at any time.
-- **Claim**: once the deadline has passed, the recipient spends the cell.
+- **Reclaim**: the owner spends the cell anywhere, at any time, including a
+  typed cell (capacity and tokens together).
+- **Claim**: once the deadline has passed, the recipient spends the cell. For a
+  plain CKB cell they take everything; for a **typed** cell (a UDT, say) they
+  keep the tokens while the cell's CKB capacity returns to the owner, so leaving
+  someone only tokens doesn't also give away the backing CKB.
 
 The recipient's transaction must declare a `since` value at or past the
 deadline. CKB consensus won't include a transaction in a block until the
@@ -89,7 +93,9 @@ limits: [`docs/security-model.md`](docs/security-model.md).
   approximate.
 - **No off-chain notification.** Nothing reminds the owner to renew.
 - **The SDK only creates plain CKB cells.** It keeps a typed cell's type
-  script and data when spending, but moves the whole cell as one unit.
+  script and data when spending: owner spends move the whole cell as one unit,
+  and a recipient claim returns the capacity to the owner while handing the
+  recipient the tokens. It doesn't split a UDT balance or merge cells.
 - **Not audited.**
 
 ## Testnet deployment
@@ -97,10 +103,17 @@ limits: [`docs/security-model.md`](docs/security-model.md).
 | Field | Value |
 |---|---|
 | Network | CKB Testnet (Pudge) |
-| `code_hash` | `0xffc6b1c122037a97c18878f583ab789ea7f6cf3a1febc1e02e4fd9f36c442bfd` |
+| `code_hash` | `0x258d2a85b854c9a1ae9824a2c60aa88e32a95d81a9386f734275629918dd757a` |
 | `hash_type` | `type` (Type ID) |
-| Cell dep | [`0x0d0eb86d886c4c0f0981489498c68aba8bc914a946bbbf11ceec8c13ce442c08`](https://pudge.explorer.nervos.org/transaction/0x0d0eb86d886c4c0f0981489498c68aba8bc914a946bbbf11ceec8c13ce442c08) index `0`, `dep_type = code` |
-| Binary data hash | `0x24a5f576896042fa4583b9536189edfd21731c3d82f29ba28395a8145d77da3d` |
+| Cell dep | [`0xd0e66d4f3c401a949b8baa1f15fd11fcbdb5625542b58ff20b40bfdaac7969a6`](https://pudge.explorer.nervos.org/transaction/0xd0e66d4f3c401a949b8baa1f15fd11fcbdb5625542b58ff20b40bfdaac7969a6) index `0`, `dep_type = code` |
+| Binary data hash | `0xf580ce5698d42198a615c4f582e4d24fd39fbb1109460980a070babe750b0a59` |
+
+This is the lock binary **with** the typed-cell capacity-refund rule
+(`docs/spec.md` §5.1). The earlier pre-refund deployment is kept as superseded in
+[`docs/deployment.md`](docs/deployment.md). The lifecycle was re-run against this
+deployment: the full plain lifecycle is complete, and the UDT cell is created
+with its recipient claim (the transaction that exercises the refund rule) as the
+final step — see [`docs/testnet-evidence.md`](docs/testnet-evidence.md).
 
 Build and deploy steps for reproducing these hashes are in
 [`docs/deployment.md`](docs/deployment.md). The build hash has so far been
@@ -126,8 +139,8 @@ Requirements: Rust with the `riscv64imac-unknown-none-elf` target and clang
 ```bash
 npm install
 
-npm run test:contract    # 43 Rust tests: lock unit + integration, since-comparison
-npm run test:sdk         # 44 SDK tests, incl. the TypeScript since-comparison
+npm run test:contract    # 48 Rust tests: lock unit + integration, since-comparison
+npm run test:sdk         # 47 SDK tests, incl. the TypeScript since-comparison
 npm run build            # SDK -> sdk/dist (JS + .d.ts); the package entry points
 npm run typecheck
 
@@ -174,19 +187,27 @@ browser, so use testnet keys only.
   rejects degenerate `(0, 0)` fractions, relative or other-metric `since`,
   early inputs hidden in a multi-input group, mode-byte swaps, wrong signers,
   tampered and malformed signatures and witnesses, and signature replay.
+  For typed cells it checks the recipient-path capacity refund: a claim with no
+  refund or an underpaid one fails, a full refund passes, a plain claim is
+  unaffected, and a mixed typed/plain group only needs the typed part refunded.
   All tests use real secp256k1 signatures under `ckb-testtool`.
 - **Shared comparison:** one test suite run against both the Rust and
   TypeScript ports, plus byte-for-byte golden vectors for the args and
   witness encodings.
 - **SDK:** eligibility boundaries, status decoding, deadline arithmetic,
   signer-key recovery from every produced signature, minimum-capacity and
-  lock-type guards, and type-script preservation.
+  lock-type guards, type-script preservation, and the typed-cell claim that
+  refunds the capacity to the owner and funds the recipient's token cell.
 
 **On testnet:** the full lifecycle (create, extend, owner reclaim before and
 after the deadline, a recipient claim refused early by the node itself, and a
 recipient claim after the deadline paid to the recipient) was run with
 SDK-built transactions. Every transaction hash is in
-[`docs/testnet-evidence.md`](docs/testnet-evidence.md).
+[`docs/testnet-evidence.md`](docs/testnet-evidence.md). That original run
+predates the typed-cell refund rule and covers plain CKB cells only. The lock
+has since been redeployed with the refund rule and re-run against that
+deployment, covering both a plain lifecycle and a UDT cell; those hashes are in
+the "Refund-rule re-run" section of the evidence doc.
 
 The demo UI was also clicked through on testnet with Playwright
 (`demo/e2e/`): keys generated in the UI, a wallet connected through the CCC

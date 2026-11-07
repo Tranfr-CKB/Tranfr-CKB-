@@ -6,11 +6,11 @@ import { TranfrConfig } from "./types.js";
  * Reference: docs/deployment.md
  */
 export const TRANFR_TESTNET_CONFIG: TranfrConfig = {
-  codeHash: "0xffc6b1c122037a97c18878f583ab789ea7f6cf3a1febc1e02e4fd9f36c442bfd",
+  codeHash: "0x258d2a85b854c9a1ae9824a2c60aa88e32a95d81a9386f734275629918dd757a",
   hashType: "type",
   cellDep: {
     outPoint: {
-      txHash: "0x0d0eb86d886c4c0f0981489498c68aba8bc914a946bbbf11ceec8c13ce442c08",
+      txHash: "0xd0e66d4f3c401a949b8baa1f15fd11fcbdb5625542b58ff20b40bfdaac7969a6",
       index: 0,
     },
     depType: "code",

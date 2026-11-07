@@ -34,7 +34,10 @@ use ckb_std::ckb_constants::Source;
 use ckb_std::error::SysError;
 #[allow(unused_imports)]
 use ckb_std::ckb_types::prelude::*;
-use ckb_std::high_level::{load_input_since, load_script, load_witness_args};
+use ckb_std::high_level::{
+    load_cell_capacity, load_cell_lock_hash, load_cell_type_hash, load_input_since, load_script,
+    load_witness_args,
+};
 
 #[cfg(not(any(feature = "library", test)))]
 ckb_std::entry!(program_entry);
@@ -76,6 +79,14 @@ pub const ERR_SECP_PARSE_SIGNATURE: i8 = 13;
 pub const ERR_SECP_RECOVER_PUBKEY: i8 = 14;
 /// Failed to load this input's `since` field.
 pub const ERR_LOAD_SINCE: i8 = 15;
+/// RECIPIENT mode: the cell carries a type script (e.g. a UDT), so its
+/// capacity must be refunded to the owner, but the outputs locked to
+/// `owner_lock_hash` do not total at least the summed capacity of the typed
+/// inputs in the group.
+pub const ERR_INSUFFICIENT_OWNER_REFUND: i8 = 16;
+/// Failed to load a cell's capacity, type hash, or lock hash while checking
+/// the recipient-path owner refund.
+pub const ERR_LOAD_CELL: i8 = 17;
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 
@@ -211,6 +222,70 @@ fn verify_recipient_since(args: &TranfrArgs) -> Result<(), i8> {
     }
 }
 
+// ── Recipient refund gate (typed cells) ─────────────────────────────────────
+
+/// RECIPIENT path refund rule (docs/spec.md §5). A plain CKB cell (no type
+/// script) is claimed in full, as before. But a *typed* cell — a UDT, say —
+/// holds CKB only so the token cell can exist; on the recipient's claim the
+/// recipient keeps the tokens while that backing capacity returns to the
+/// owner.
+///
+/// Concretely, in the recipient path only: sum the capacity of every input in
+/// this script group that carries a type script, and require the outputs
+/// locked to `owner_lock_hash` to total at least that sum. If no group input
+/// is typed, the rule is vacuous and the recipient takes everything. Sums are
+/// `u128` so that adding many `u64` capacities can never overflow.
+///
+/// The lock still constrains authorization only: it does not check the token
+/// output itself (amount, type, or destination). Preserving the tokens into a
+/// recipient-locked output is the transaction builder's job (the SDK's
+/// `buildRecoveryClaim`); the lock enforces just the owner's capacity refund.
+fn verify_recipient_refund(args: &TranfrArgs) -> Result<(), i8> {
+    let mut typed_input_capacity: u128 = 0;
+    let mut i = 0usize;
+    loop {
+        match load_cell_type_hash(i, Source::GroupInput) {
+            Ok(type_hash) => {
+                if type_hash.is_some() {
+                    let cap =
+                        load_cell_capacity(i, Source::GroupInput).map_err(|_| ERR_LOAD_CELL)?;
+                    typed_input_capacity += cap as u128;
+                }
+                i += 1;
+            }
+            Err(SysError::IndexOutOfBound) => break,
+            Err(_) => return Err(ERR_LOAD_CELL),
+        }
+    }
+
+    // Plain claim (no typed input in the group): unchanged — recipient takes all.
+    if typed_input_capacity == 0 {
+        return Ok(());
+    }
+
+    let mut owner_refund: u128 = 0;
+    let mut j = 0usize;
+    loop {
+        match load_cell_lock_hash(j, Source::Output) {
+            Ok(lock_hash) => {
+                if lock_hash == args.owner_lock_hash {
+                    let cap = load_cell_capacity(j, Source::Output).map_err(|_| ERR_LOAD_CELL)?;
+                    owner_refund += cap as u128;
+                }
+                j += 1;
+            }
+            Err(SysError::IndexOutOfBound) => break,
+            Err(_) => return Err(ERR_LOAD_CELL),
+        }
+    }
+
+    if owner_refund >= typed_input_capacity {
+        Ok(())
+    } else {
+        Err(ERR_INSUFFICIENT_OWNER_REFUND)
+    }
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn program_entry() -> i8 {
@@ -241,7 +316,10 @@ pub fn program_entry() -> i8 {
             match verify_signature_matches_lock_hash(&witness.signature, &args.recipient_lock_hash)
             {
                 Ok(true) => match verify_recipient_since(&args) {
-                    Ok(()) => 0,
+                    Ok(()) => match verify_recipient_refund(&args) {
+                        Ok(()) => 0,
+                        Err(err) => err,
+                    },
                     Err(err) => err,
                 },
                 Ok(false) => ERR_RECIPIENT_SIG,

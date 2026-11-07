@@ -32,10 +32,7 @@ test("TranfrClient getCellDep returns valid CellDep instance", () => {
   const client = new TranfrClient();
   const cellDep = client.getCellDep();
 
-  assert.equal(
-    cellDep.outPoint.txHash,
-    "0x0d0eb86d886c4c0f0981489498c68aba8bc914a946bbbf11ceec8c13ce442c08"
-  );
+  assert.equal(cellDep.outPoint.txHash, TRANFR_TESTNET_CONFIG.cellDep.outPoint.txHash);
   assert.equal(cellDep.outPoint.index, 0n);
   assert.equal(cellDep.depType, "code");
 });

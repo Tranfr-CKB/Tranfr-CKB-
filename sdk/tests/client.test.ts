@@ -80,6 +80,41 @@ function fakeClient(tipEpoch: ccc.EpochLike, cells?: Map<string, ccc.Cell>, comm
   return new FakeClient(tipEpoch, cells, commitEpoch) as unknown as ccc.Client;
 }
 
+/**
+ * A `ccc.ClientPublicTestnet` subclass that answers entirely from an in-memory
+ * cell set, so the typed-cell `buildRecoveryClaim` path — which funds the
+ * recipient's token cell with CCC's real `completeInputsByCapacity` /
+ * `completeFeeBy` / signer plumbing — can be exercised offline. Only the
+ * network-leaf methods are overridden; the collection and signing machinery is
+ * the real inherited code.
+ */
+class OfflineTestnetClient extends ccc.ClientPublicTestnet {
+  constructor(
+    private readonly tipEpoch: ccc.EpochLike,
+    private readonly liveCells: ccc.Cell[] = [],
+  ) {
+    super();
+  }
+
+  getTipHeader = async () =>
+    ({ epoch: ccc.Epoch.from(this.tipEpoch) }) as unknown as ccc.ClientBlockHeader;
+
+  getCellLiveNoCache = async (outPointLike: ccc.OutPointLike) => {
+    const op = ccc.OutPoint.from(outPointLike);
+    return this.liveCells.find((c) => c.outPoint.txHash === op.txHash && c.outPoint.index === op.index);
+  };
+
+  findCellsPagedNoCache = async (
+    keyLike: ccc.ClientIndexerSearchKeyLike,
+  ): Promise<ccc.ClientFindCellsResponse> => {
+    const key = ccc.ClientIndexerSearchKey.from(keyLike);
+    const cells = key.scriptType === "lock" ? this.liveCells.filter((c) => c.cellOutput.lock.eq(key.script)) : [];
+    return { lastCursor: "", cells };
+  };
+
+  getFeeRateStatistics = async () => ({ mean: 1000n, median: 1000n });
+}
+
 async function secp256k1LockOf(privateKey: ccc.Hex): Promise<ccc.Script> {
   return (await new ccc.SignerCkbPrivateKey(new ccc.ClientPublicTestnet(), privateKey).getAddressObjSecp256k1()).script;
 }
@@ -413,7 +448,9 @@ function assertKeepsTypeAndData(tx: ccc.Transaction) {
   );
 }
 
-test("renew, reclaim and claim keep a typed cell's type script and data", async () => {
+test("renew and reclaim keep a typed cell's type script and data (owner-mode, single output)", async () => {
+  // Owner-mode spends move the whole typed cell as one unit: output[0] keeps
+  // its type + data. (The recipient claim splits instead — see below.)
   const cell = await buildTypedCell();
   const client = new TranfrClient({ client: fakeClient([600n, 0n, 1n], undefined, [0n, 0n, 1n]) });
 
@@ -423,20 +460,96 @@ test("renew, reclaim and claim keep a typed cell's type script and data", async 
   assertKeepsTypeAndData(
     await client.buildOwnerReclaim({ cell, ownerPrivateKey: OWNER_PRIVATE_KEY, cellDeps: [UDT_CELL_DEP] }),
   );
-  assertKeepsTypeAndData(
-    await client.buildRecoveryClaim({ cell, recipientPrivateKey: RECIPIENT_PRIVATE_KEY, cellDeps: [UDT_CELL_DEP] }),
+});
+
+test("buildRecoveryClaim on a typed cell refunds the capacity to the owner and gives the recipient the tokens", async () => {
+  const ownerLock = await secp256k1LockOf(OWNER_PRIVATE_KEY);
+  const recipientScript = await secp256k1LockOf(RECIPIENT_PRIVATE_KEY);
+  const cell = await buildTypedCell(); // 300 CKB, UDT_TYPE, UDT_AMOUNT, owner/recipient as above
+  const deadlineSince = decodeArgs(cell.cellOutput.lock.args).deadlineSince;
+
+  // The recipient funds the token cell's own capacity from a plain cell of theirs.
+  const fundingCell = ccc.Cell.from({
+    outPoint: { txHash: `0x${"fd".repeat(32)}`, index: 0 },
+    cellOutput: { capacity: 500_00000000n, lock: recipientScript },
+    outputData: "0x",
+  });
+  const client = new TranfrClient({
+    client: new OfflineTestnetClient([600n, 0n, 1n], [cell, fundingCell]) as unknown as ccc.Client,
+  });
+
+  const tx = await client.buildRecoveryClaim({
+    cell,
+    recipientPrivateKey: RECIPIENT_PRIVATE_KEY,
+    ownerLock,
+    cellDeps: [UDT_CELL_DEP],
+  });
+
+  // Output 0: the whole capacity returned to the owner as plain CKB.
+  assert.ok(tx.outputs[0].lock.eq(ownerLock), "owner refund output must be locked to the owner");
+  assert.equal(tx.outputs[0].type, undefined, "owner refund is plain CKB (no type)");
+  assert.equal(tx.outputs[0].capacity, cell.cellOutput.capacity, "owner is refunded the full cell capacity");
+  // Output 1: the tokens, to the recipient, type + data preserved.
+  assert.ok(tx.outputs[1].type?.eq(UDT_TYPE), "token output keeps the type script");
+  assert.equal(tx.outputsData[1], UDT_AMOUNT, "token output keeps the UDT amount data");
+  assert.ok(tx.outputs[1].lock.eq(recipientScript), "tokens go to the recipient");
+  // The Tranfr input is spent RECIPIENT-mode with since = the deadline.
+  assert.equal(tx.inputs[0].since, deadlineSince);
+  assert.equal(decodeWitnessLock(tx.getWitnessArgs(0)!.lock!).mode, UnlockMode.RECIPIENT);
+  // A recipient funding input was added for the token cell's capacity.
+  assert.ok(tx.inputs.length >= 2, "the recipient funds the token cell from their own capacity");
+  // The type script's cell dep is present (before signing).
+  assert.ok(
+    tx.cellDeps.some((dep) => dep.eq(ccc.CellDep.from(UDT_CELL_DEP))),
+    "the type script's cell dep must be included",
+  );
+  // The owner refund + typed inputs satisfy the on-chain refund rule.
+  const refundToOwner = tx.outputs
+    .filter((o) => o.lock.eq(ownerLock))
+    .reduce((acc, o) => acc + o.capacity, 0n);
+  assert.ok(refundToOwner >= cell.cellOutput.capacity, "owner refund covers the typed input capacity");
+});
+
+test("buildRecoveryClaim on a typed cell requires the owner lock", async () => {
+  const cell = await buildTypedCell();
+  const client = new TranfrClient({
+    client: new OfflineTestnetClient([600n, 0n, 1n], [cell]) as unknown as ccc.Client,
+  });
+  await assert.rejects(
+    () => client.buildRecoveryClaim({ cell, recipientPrivateKey: RECIPIENT_PRIVATE_KEY, cellDeps: [UDT_CELL_DEP] }),
+    /needs the owner's/,
+  );
+});
+
+test("buildRecoveryClaim rejects an owner lock that doesn't match the cell's owner_lock_hash", async () => {
+  const cell = await buildTypedCell();
+  const wrongOwner = await secp256k1LockOf(RECIPIENT_PRIVATE_KEY); // the recipient, not the owner
+  const client = new TranfrClient({
+    client: new OfflineTestnetClient([600n, 0n, 1n], [cell]) as unknown as ccc.Client,
+  });
+  await assert.rejects(
+    () =>
+      client.buildRecoveryClaim({
+        cell,
+        recipientPrivateKey: RECIPIENT_PRIVATE_KEY,
+        ownerLock: wrongOwner,
+        cellDeps: [UDT_CELL_DEP],
+      }),
+    /does not match the cell's owner_lock_hash/,
   );
 });
 
 test("spending a typed cell without its cell deps is refused before signing", async () => {
   const cell = await buildTypedCell();
+  const ownerLock = await secp256k1LockOf(OWNER_PRIVATE_KEY);
   const client = new TranfrClient({ client: fakeClient([600n, 0n, 1n], undefined, [0n, 0n, 1n]) });
   const missingDeps = /has a type script; pass that script's cell deps/;
 
   await assert.rejects(() => client.renewTranfr({ cell, ownerPrivateKey: OWNER_PRIVATE_KEY }), missingDeps);
   await assert.rejects(() => client.buildOwnerReclaim({ cell, ownerPrivateKey: OWNER_PRIVATE_KEY }), missingDeps);
+  // The owner lock is supplied, so the claim reaches (and fails at) the cell-dep check.
   await assert.rejects(
-    () => client.buildRecoveryClaim({ cell, recipientPrivateKey: RECIPIENT_PRIVATE_KEY }),
+    () => client.buildRecoveryClaim({ cell, recipientPrivateKey: RECIPIENT_PRIVATE_KEY, ownerLock }),
     missingDeps,
   );
 });

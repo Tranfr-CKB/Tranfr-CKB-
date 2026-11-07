@@ -96,16 +96,21 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32].into()).expect("valid scalar")
 }
 
-/// The `secp256k1_blake160_sighash_all` lock hash a wallet holding `key` has.
-fn lock_hash_of(key: &SigningKey) -> [u8; 32] {
+/// The standard `secp256k1_blake160_sighash_all` lock script a wallet holding
+/// `key` has.
+fn secp256k1_script_of(key: &SigningKey) -> Script {
     let pubkey = key.verifying_key().to_sec1_point(true);
     let args = &blake2b_256(pubkey.as_bytes())[0..20];
-    let script = Script::new_builder()
+    Script::new_builder()
         .code_hash(SECP256K1_BLAKE160_SIGHASH_ALL_CODE_HASH.pack())
         .hash_type(ckb_testtool::ckb_types::core::ScriptHashType::Type)
         .args(Bytes::copy_from_slice(args).pack())
-        .build();
-    blake2b_256(script.as_slice())
+        .build()
+}
+
+/// The `secp256k1_blake160_sighash_all` lock hash a wallet holding `key` has.
+fn lock_hash_of(key: &SigningKey) -> [u8; 32] {
+    blake2b_256(secp256k1_script_of(key).as_slice())
 }
 
 /// Packs an RFC 0017 `since`: flags byte, then (epoch, index, length).
@@ -640,4 +645,257 @@ fn adv_malformed_witness_and_args_never_succeed() {
     let mut context = Context::default();
     let tx = build_signed_tx(&mut context, Bytes::new(), 0x00, &owner, 0);
     assert_error_code(&verify(&context, &tx).unwrap_err(), ERR_ARGS_LEN);
+}
+
+// ── Typed-cell recipient refund rule (docs/spec.md §5) ───────────────────────
+//
+// On the recipient's claim, a plain CKB input is taken in full, but the
+// capacity of every *typed* input in the group must be refunded to outputs
+// locked to `owner_lock_hash`. These tests use an always-success type script
+// to stand in for a UDT (the lock never inspects the type script itself, only
+// whether the cell has one and how much capacity it holds). ckb-testtool runs
+// the scripts but not consensus's capacity-conservation check, so output
+// capacities can be set freely to isolate the refund rule.
+
+use ckb_testtool::builtin::ALWAYS_SUCCESS;
+
+const ERR_INSUFFICIENT_OWNER_REFUND: i8 = 16;
+
+/// A Tranfr-locked input to a recipient claim. `typed` gives it an
+/// always-success type script (a stand-in UDT); `capacity` is in shannons but
+/// its absolute value is arbitrary here since balance isn't verified.
+struct ClaimInput {
+    since: u64,
+    typed: bool,
+    capacity: u64,
+}
+
+/// An output of a recipient claim, locked to `lock`. `typed` carries the same
+/// always-success type script (the recipient's token cell).
+struct ClaimOutput {
+    lock: Script,
+    typed: bool,
+    capacity: u64,
+    data: Bytes,
+}
+
+/// Builds and signs a RECIPIENT-mode claim with arbitrary typed/plain inputs
+/// (all sharing the one Tranfr lock, so one script group) and arbitrary
+/// outputs. Signs the real sighash_all message with `recipient`, exactly as
+/// `build_signed_tx_multi` does, then lets `complete_tx` wire in the Tranfr
+/// and always-success cell deps.
+fn build_signed_claim(
+    context: &mut Context,
+    args: Bytes,
+    recipient: &SigningKey,
+    inputs: &[ClaimInput],
+    outputs: &[ClaimOutput],
+) -> ckb_testtool::ckb_types::core::TransactionView {
+    let placeholder = |sig: [u8; 65]| {
+        let mut lock = vec![0x01u8]; // RECIPIENT mode
+        lock.extend_from_slice(&sig);
+        make_witness(Some(Bytes::from(lock)))
+    };
+    let out_point = context.deploy_cell_by_name("tranfr-lock");
+    let lock_script = context.build_script(&out_point, args).expect("script");
+    let always = context.deploy_cell(ALWAYS_SUCCESS.clone());
+    let type_script = context
+        .build_script(&always, Bytes::from_static(b"udt"))
+        .expect("type script");
+
+    let mut builder = TransactionBuilder::default();
+    for inp in inputs {
+        let mut co = CellOutput::new_builder()
+            .capacity(inp.capacity)
+            .lock(lock_script.clone());
+        if inp.typed {
+            co = co.type_(Some(type_script.clone()).pack());
+        }
+        let input_out_point = context.create_cell(co.build(), Bytes::new());
+        builder = builder.input(
+            CellInput::new_builder()
+                .previous_output(input_out_point)
+                .since(Pack::<Uint64>::pack(&inp.since))
+                .build(),
+        );
+    }
+    for out in outputs {
+        let mut co = CellOutput::new_builder()
+            .capacity(out.capacity)
+            .lock(out.lock.clone());
+        if out.typed {
+            co = co.type_(Some(type_script.clone()).pack());
+        }
+        builder = builder
+            .output(co.build())
+            .output_data(out.data.pack());
+    }
+    let tx = builder
+        .witness(placeholder([0u8; 65]).pack())
+        .witnesses((1..inputs.len()).map(|_| Bytes::new().pack()))
+        .build();
+    let tx = context.complete_tx(tx);
+
+    let zeroed = make_witness(Some(Bytes::from(vec![0u8; 66])));
+    let mut hasher = new_blake2b();
+    hasher.update(tx.hash().as_slice());
+    hasher.update(&(zeroed.len() as u64).to_le_bytes());
+    hasher.update(&zeroed);
+    for _ in 1..inputs.len() {
+        hasher.update(&0u64.to_le_bytes());
+    }
+    let mut message = [0u8; 32];
+    hasher.finalize(&mut message);
+
+    let (sig, recid) = recipient.sign_prehash_recoverable(&message);
+    let mut sig_bytes = [0u8; 65];
+    sig_bytes[0..64].copy_from_slice(&sig.to_bytes());
+    sig_bytes[64] = recid.to_byte();
+    tx.as_advanced_builder()
+        .set_witnesses(
+            std::iter::once(placeholder(sig_bytes).pack())
+                .chain((1..inputs.len()).map(|_| Bytes::new().pack()))
+                .collect(),
+        )
+        .build()
+}
+
+fn token(n: u8) -> Bytes {
+    Bytes::from(vec![n; 16]) // 16-byte little-endian UDT amount, value irrelevant to the lock
+}
+
+#[test]
+fn recipient_typed_claim_with_no_refund_fails() {
+    let (owner, recipient) = (key(1), key(2));
+    let deadline = since(ABS_EPOCH, 100, 1, 4);
+    let mature = since(ABS_EPOCH, 200, 0, 1);
+    let mut context = Context::default();
+    let args = args_for(&owner, &recipient, deadline);
+    let recipient_lock = secp256k1_script_of(&recipient);
+    // A typed input, but the whole cell (tokens and capacity) goes to the
+    // recipient — nothing is refunded to the owner.
+    let tx = build_signed_claim(
+        &mut context,
+        args,
+        &recipient,
+        &[ClaimInput { since: mature, typed: true, capacity: 300 }],
+        &[ClaimOutput { lock: recipient_lock, typed: true, capacity: 300, data: token(1) }],
+    );
+    assert_error_code(&verify(&context, &tx).unwrap_err(), ERR_INSUFFICIENT_OWNER_REFUND);
+}
+
+#[test]
+fn recipient_typed_claim_with_underpaid_refund_fails() {
+    let (owner, recipient) = (key(1), key(2));
+    let deadline = since(ABS_EPOCH, 100, 1, 4);
+    let mature = since(ABS_EPOCH, 200, 0, 1);
+    let mut context = Context::default();
+    let args = args_for(&owner, &recipient, deadline);
+    let owner_lock = secp256k1_script_of(&owner);
+    let recipient_lock = secp256k1_script_of(&recipient);
+    // Refunds only 299 of the 300 typed capacity to the owner.
+    let tx = build_signed_claim(
+        &mut context,
+        args,
+        &recipient,
+        &[ClaimInput { since: mature, typed: true, capacity: 300 }],
+        &[
+            ClaimOutput { lock: owner_lock, typed: false, capacity: 299, data: Bytes::new() },
+            ClaimOutput { lock: recipient_lock, typed: true, capacity: 142, data: token(1) },
+        ],
+    );
+    assert_error_code(&verify(&context, &tx).unwrap_err(), ERR_INSUFFICIENT_OWNER_REFUND);
+}
+
+#[test]
+fn recipient_typed_claim_with_full_refund_passes() {
+    let (owner, recipient) = (key(1), key(2));
+    let deadline = since(ABS_EPOCH, 100, 1, 4);
+    let mature = since(ABS_EPOCH, 200, 0, 1);
+    let mut context = Context::default();
+    let args = args_for(&owner, &recipient, deadline);
+    let owner_lock = secp256k1_script_of(&owner);
+    let recipient_lock = secp256k1_script_of(&recipient);
+    // The full 300 of typed capacity returns to the owner as plain CKB; the
+    // recipient takes the tokens in a separately-funded token cell.
+    let tx = build_signed_claim(
+        &mut context,
+        args,
+        &recipient,
+        &[ClaimInput { since: mature, typed: true, capacity: 300 }],
+        &[
+            ClaimOutput { lock: owner_lock, typed: false, capacity: 300, data: Bytes::new() },
+            ClaimOutput { lock: recipient_lock, typed: true, capacity: 142, data: token(1) },
+        ],
+    );
+    verify(&context, &tx).expect("full owner refund should pass");
+}
+
+#[test]
+fn recipient_plain_claim_unaffected_by_refund_rule() {
+    // A plain CKB cell (no type script) is still taken in full by the
+    // recipient, with no owner refund — the pre-existing behaviour.
+    let (owner, recipient) = (key(1), key(2));
+    let deadline = since(ABS_EPOCH, 100, 1, 4);
+    let mature = since(ABS_EPOCH, 200, 0, 1);
+    let mut context = Context::default();
+    let args = args_for(&owner, &recipient, deadline);
+    let recipient_lock = secp256k1_script_of(&recipient);
+    let tx = build_signed_claim(
+        &mut context,
+        args,
+        &recipient,
+        &[ClaimInput { since: mature, typed: false, capacity: 300 }],
+        &[ClaimOutput { lock: recipient_lock, typed: false, capacity: 300, data: Bytes::new() }],
+    );
+    verify(&context, &tx).expect("plain claim should pass with no owner refund");
+}
+
+#[test]
+fn recipient_mixed_inputs_refund_only_the_typed_part() {
+    // One typed input (300) and one plain input (500) in the group. Only the
+    // typed 300 must go to the owner; the plain 500 is the recipient's.
+    let (owner, recipient) = (key(1), key(2));
+    let deadline = since(ABS_EPOCH, 100, 1, 4);
+    let mature = since(ABS_EPOCH, 200, 0, 1);
+    let args = args_for(&owner, &recipient, deadline);
+    let owner_lock = secp256k1_script_of(&owner);
+    let recipient_lock = secp256k1_script_of(&recipient);
+
+    // Refunding exactly the typed part (300) to the owner passes, even though
+    // the recipient keeps the plain 500.
+    let mut context = Context::default();
+    let tx = build_signed_claim(
+        &mut context,
+        args.clone(),
+        &recipient,
+        &[
+            ClaimInput { since: mature, typed: true, capacity: 300 },
+            ClaimInput { since: mature, typed: false, capacity: 500 },
+        ],
+        &[
+            ClaimOutput { lock: owner_lock.clone(), typed: false, capacity: 300, data: Bytes::new() },
+            ClaimOutput { lock: recipient_lock.clone(), typed: true, capacity: 142, data: token(1) },
+            ClaimOutput { lock: recipient_lock.clone(), typed: false, capacity: 500, data: Bytes::new() },
+        ],
+    );
+    verify(&context, &tx).expect("refunding just the typed part should pass");
+
+    // Refunding less than the typed part (299) still fails, even though the
+    // owner output is far smaller than total input capacity.
+    let mut context = Context::default();
+    let tx = build_signed_claim(
+        &mut context,
+        args,
+        &recipient,
+        &[
+            ClaimInput { since: mature, typed: true, capacity: 300 },
+            ClaimInput { since: mature, typed: false, capacity: 500 },
+        ],
+        &[
+            ClaimOutput { lock: owner_lock, typed: false, capacity: 299, data: Bytes::new() },
+            ClaimOutput { lock: recipient_lock, typed: false, capacity: 501, data: Bytes::new() },
+        ],
+    );
+    assert_error_code(&verify(&context, &tx).unwrap_err(), ERR_INSUFFICIENT_OWNER_REFUND);
 }

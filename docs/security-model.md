@@ -102,11 +102,16 @@ For the same reason, the CCC wallet connectors (JoyID, MetaMask and other EIP-69
 
 ### 5.2 Type scripts and cell data
 
-The lock ignores the cell's type script, so keeping a typed asset (for example a UDT) intact is the transaction builder's job. A builder that dropped the type script would, depending on the asset's rules, destroy the asset.
+A typed cell — one carrying a type script, such as a UDT — holds CKB capacity only so the token cell can exist. The two unlock paths treat that capacity differently:
 
-The SDK's `renewTranfr`, `buildOwnerReclaim` and `buildRecoveryClaim` copy the input's type script and data unchanged into their single output, changing only the lock. Running a type script needs its code as a cell dep, and the signature covers the cell deps, so they can't be added after the SDK signs. Callers pass them as `cellDeps`, and the SDK refuses to build a spend of a typed cell without them.
+- **Owner path:** the lock ignores the type field entirely. The owner can move a typed cell wholesale — capacity and tokens together. Keeping the token intact is the transaction builder's job; a builder that dropped the type script would, depending on the asset's rules, destroy the asset.
+- **Recipient path:** the lock requires the typed cell's capacity to be refunded to the owner (`docs/spec.md` §5.1). Without this, a recipient claiming a typed cell would take both the tokens and all the backing CKB, so an owner who deliberately left only tokens would also be handing over the capacity. The lock sums the capacity of the typed inputs in the group and requires at least that much to reach outputs locked to `owner_lock_hash` (`ERR_INSUFFICIENT_OWNER_REFUND` otherwise). It enforces *only* that capacity refund — not the token's type, amount, or destination; routing the tokens to the recipient is still the builder's job.
 
-Two limits remain. The SDK moves the whole cell as one unit: there's no splitting a UDT balance or merging cells. And `createTranfr` only creates plain CKB cells; wrapping an existing typed cell in Tranfr has to be built by hand.
+The SDK matches this. `renewTranfr` and `buildOwnerReclaim` (owner path) copy the input's type script and data unchanged into their single output, changing only the lock. `buildRecoveryClaim` on a typed cell instead produces two outputs: the cell's whole capacity back to the owner as plain CKB, and a new token cell (same type and data) to the recipient, whose capacity the recipient funds from their own cells. Because only the owner's lock *hash* is stored on chain, `buildRecoveryClaim` needs the owner's lock passed in (`ownerLock`) and checks its hash before building.
+
+Running a type script needs its code as a cell dep, and the signature covers the cell deps, so they can't be added after the SDK signs. Callers pass them as `cellDeps`, and the SDK refuses to build a spend of a typed cell without them.
+
+Two limits remain. The SDK moves tokens as one unit: there's no splitting a UDT balance or merging cells. And `createTranfr` only creates plain CKB cells; wrapping an existing typed cell in Tranfr has to be built by hand.
 
 ### 5.3 Cell creation is unchecked
 
@@ -140,7 +145,7 @@ Nothing reminds the owner to renew or tells the recipient a cell is claimable. T
 
 - Single recipient only: no social or threshold recovery.
 - Owner and recipient must be standard secp256k1 keys (§5.1).
-- The SDK creates only plain CKB cells, and moves typed cells whole (§5.2).
+- The SDK creates only plain CKB cells. Owner spends move a typed cell whole; a recipient claim returns the capacity to the owner and keeps the tokens (§5.2).
 - No protection against owner key theft (§1).
 - No off-chain notification (§6.4).
 - Testnet only, with an upgradeable deployment (§2.1).
@@ -154,7 +159,7 @@ Nothing reminds the owner to renew or tells the recipient a cell is claimable. T
 - Codecs: golden vectors checked byte-for-byte in both languages.
 - SDK: unit tests against a fake RPC client, including recovery of the signer's public key from each produced signature.
 
-- Testnet: the full lifecycle with SDK-built transactions (`docs/testnet-evidence.md`). That includes a recipient claim the node itself rejected as `Immature` before the deadline, and one after the deadline that paid the recipient.
+- Testnet: the full lifecycle with SDK-built transactions (`docs/testnet-evidence.md`). That includes a recipient claim the node itself rejected as `Immature` before the deadline, and one after the deadline that paid the recipient. This run predates the typed-cell refund rule (§5.2) and covers plain CKB cells only; a redeploy and a typed-cell (UDT) run are pending (`docs/testnet-evidence.md`, `docs/deployment.md`). The refund rule itself is covered by the contract and SDK test suites.
 
 - Demo UI: a Playwright click-through on testnet through the real CCC connector, using an injected EIP-6963 test wallet (`docs/testnet-evidence.md`).
 

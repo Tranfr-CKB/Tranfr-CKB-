@@ -7,3 +7,8 @@ node_modules
 /sdk/dist
 /demo/test-results
 /demo/playwright-report
+
+# Testnet secrets and lifecycle logs — hold private keys / local run output, never commit
+/keys.json
+/plain.json
+/udt.json

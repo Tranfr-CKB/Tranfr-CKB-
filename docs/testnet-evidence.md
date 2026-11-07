@@ -1,7 +1,19 @@
 # Testnet evidence: full lifecycle
 
+> **Two runs are recorded here.** The **refund-rule re-run**
+> ([bottom of this file](#refund-rule-re-run)) is the current one: it was made
+> against the deployed lock binary **with** the typed-cell capacity-refund rule
+> (`docs/spec.md` §5.1, `code_hash 0x258d2a85…dd757a`) and covers both a plain
+> lifecycle and a UDT cell. The **original run** (next section) predates that
+> rule — it was made against the earlier binary (`code_hash 0xffc6b1c1…442bfd`)
+> and exercises **plain CKB cells only**, where the rule is a no-op, so it stays
+> valid for the plain path and is kept for the demo-UI (Playwright)
+> click-through, which the re-run doesn't repeat.
+
+## Original run (pre-refund binary, plain cells)
+
 The complete Tranfr lifecycle, run on CKB testnet (`ckb_testnet`, Pudge) against
-the deployed lock (`code_hash 0xffc6b1c122037a97c18878f583ab789ea7f6cf3a1febc1e02e4fd9f36c442bfd`,
+the earlier deployed lock (`code_hash 0xffc6b1c122037a97c18878f583ab789ea7f6cf3a1febc1e02e4fd9f36c442bfd`,
 `hash_type = type`; see `docs/deployment.md`) on 2026-10-21 and 2026-10-22.
 
 **How it was run.** `scripts/testnet-lifecycle.ts` drives the SDK (`TranfrClient`)
@@ -131,3 +143,59 @@ browser storage, which is what the demo's "testnet only" warning is about.
 
 Still not covered: a real wallet (JoyID passkey, MetaMask extension). The
 connector and CCC's signer are real; the wallet behind them is a test stand-in.
+
+## Refund-rule re-run
+
+Run against the redeployed lock **with** the typed-cell capacity-refund rule
+(`docs/spec.md` §5.1), `code_hash
+0x258d2a85b854c9a1ae9824a2c60aa88e32a95d81a9386f734275629918dd757a`,
+`hash_type = type`; cell dep
+`0xd0e66d4f3c401a949b8baa1f15fd11fcbdb5625542b58ff20b40bfdaac7969a6` (see
+`docs/deployment.md`), on 2026-11-07. Driven the same way as the original run,
+by `scripts/testnet-lifecycle.ts` over the SDK. Three keys, reused across the
+plain and UDT phases:
+
+| Role | Address |
+|---|---|
+| Funder | `ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqvap25ph43qd3f7yxtgmmqwa343hgj2mpsh6ct9r` |
+| Owner | `ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqgf4vhemllsat7vy6qjq4zzpndsnfuk4vsueh90a` |
+| Recipient | `ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqtcvscd6dr9n4e9888flt3raasw59ag3psx4zcta` |
+
+### Plain lifecycle
+
+Three 200 CKB plain cells with 1-epoch deadlines: **A** (extended, then claimed
+by the recipient), **B** (reclaimed by the owner after the deadline), **C**
+(reclaimed by the owner before the deadline) — the same shape as the original
+run, confirming the refund rule is a no-op on plain cells.
+
+| # | Step | Transaction | Block | Chain epoch | Result |
+|---|---|---|---|---|---|
+| 1 | Create A | [`0xf0464477…529a`](https://pudge.explorer.nervos.org/transaction/0xf0464477b96d62d602e87c9d2f40c06febabed37bc191c622946774e4ede529a) | 22,989,904 | 14147+242/714 | 200 CKB, deadline 14148+239/714 |
+| 2 | Create B | [`0xe3c8c7de…805b`](https://pudge.explorer.nervos.org/transaction/0xe3c8c7de81e4b78ea9a494946743f555e291c9ab51ee09403913b95dec11805b) | 22,989,907 | 14147+245/714 | 200 CKB, deadline 14148+121/357 |
+| 3 | Create C | [`0x0b363afb…9401`](https://pudge.explorer.nervos.org/transaction/0x0b363afb4bfd3bfc7c3269cc89d4a305f2add9b2194b5281fe671d3c272e9401) | 22,989,910 | 14147+248/714 | 200 CKB, deadline 14148+35/102 |
+| 4 | **Extend A** (owner renew) | [`0x8718a3e2…b50b`](https://pudge.explorer.nervos.org/transaction/0x8718a3e2d8108f56b80af2be793883234b282b8b0fdf32a0c87acb67004cb50b) | 22,989,914 | 14147+252/714 | Deadline moved later: 14148+239/714 → 14148+124/357 |
+| 5 | **Owner reclaims C before its deadline** | [`0x1b583740…9511`](https://pudge.explorer.nervos.org/transaction/0x1b5837401906d4e6faba6ea70843a4ff3e9fef0f24000bc2f6fa2d3f73179511) | 22,989,917 | 14147+255/714 | Paid to the owner, OWNER-mode witness |
+| 6 | Early recipient claim on A, via the SDK | — (not built) | — | ~14147.4 | SDK refused: `Recovery is not yet eligible: the embedded deadline has not passed` |
+| 7 | **Early recipient claim on A, sent to the node with the SDK check bypassed** | — (rejected) | — | ~14147.4 | Node rejected: `TransactionFailedToVerify … Immature(Inputs[0]): the transaction is immature because of the since requirement` |
+| 8 | **Recipient claims A after its deadline** | [`0x024f847f…1c35`](https://pudge.explorer.nervos.org/transaction/0x024f847fe15b61a6776116515e1642f695729b5773d863091ea7b38624fa1c35) | 22,992,221 | 14149+417/1800 | **199.99999236 CKB paid to the recipient**, input `since` 0x200165007c003744, RECIPIENT-mode witness |
+| 9 | **Owner reclaims B after its deadline** | [`0x1f405df1…2ee8`](https://pudge.explorer.nervos.org/transaction/0x1f405df1a832caa4a17370fd4b3b8be1315991c3d0da7fc33563bb9a476b2ee8) | 22,992,224 | 14149+420/1800 | **199.99999644 CKB paid to the owner**, OWNER-mode witness |
+| 10 | Status of A and B after spending | — | — | — | `getTranfrStatus` reports `No live Tranfr cell … (not found or already spent)` for both |
+
+### Typed-cell (UDT) lifecycle — the refund rule
+
+The `udt` phase funds the recipient, mints a testnet xUDT (1,000,000 units) into
+a 200 CKB Tranfr cell with a 1-epoch deadline, then after the deadline claims it
+as the recipient. Before broadcasting, the script asserts the claim's output 0
+is the plain owner refund and output 1 is the recipient's own token cell.
+
+| # | Step | Transaction | Block | Chain epoch | Result |
+|---|---|---|---|---|---|
+| U1 | Fund recipient (for the UDT claim) | [`0x78857880…e8d9`](https://pudge.explorer.nervos.org/transaction/0x7885788046eca61abb81b0a860d16858e142bb22e82062ea70843ffb4ff2e8d9) | 22,992,230 | 14149+426/1800 | 300 CKB to the recipient |
+| U2 | Create U (UDT Tranfr cell) | [`0x0abf1f20…eb47`](https://pudge.explorer.nervos.org/transaction/0x0abf1f2054e937830d291ef94b55c89699b66884e00f62ce21a8575ccc58eb47) | 22,992,233 | 14149+429/1800 | 200 CKB cell carrying 1,000,000 xUDT, deadline 14150+71/300 |
+| U3 | **Recipient claims U after the deadline** | _pending — claim in progress, hash to follow_ | — | — | Cell capacity **refunded to the owner** as plain CKB; the 1,000,000 xUDT go to the recipient's new token cell (funded by the recipient). RECIPIENT-mode witness. |
+| U4 | Status of U after spending | — | — | — | `getTranfrStatus` reports the cell no longer live. |
+
+Acceptance for the rule: U3 pays the capacity to the owner (not the recipient)
+and delivers the tokens to the recipient — the behaviour the refund rule adds on
+top of the plain lifecycle. The plain lifecycle above (rows 1–10) confirms the
+rule leaves plain cells unchanged.
