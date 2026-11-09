@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Tranfr">
+  <rect width="64" height="64" fill="#111419"/>
+  <path d="M3 3h10v10H3z M51 51h10v10H51z" fill="#bd8849"/>
+  <text x="32" y="44" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif"
+        font-size="38" font-weight="700" fill="#eeeae3">T</text>
+</svg>

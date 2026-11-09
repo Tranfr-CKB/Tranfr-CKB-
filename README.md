@@ -177,6 +177,68 @@ cd demo && npm install && npm run dev
 The demo stores the owner and recipient test keys unencrypted in the
 browser, so use testnet keys only.
 
+It has two screens, following the `create-tranfr-policy` design prototype: a
+**Create recovery policy** form (owner and recipient keys, funding wallet,
+capacity, inactivity period) and a per-policy **dashboard** (lifecycle,
+protected assets, countdown to the deadline, owner and recipient accounts,
+owner/recipient controls, and an activity ledger). Deploying or opening a
+policy moves to its dashboard; **Reset** in the topbar goes back to the form.
+
+### Wallet mode
+
+Tranfr is meant to sit inside a wallet, where the user is already signed in.
+Wallet mode renders that flow: no key setup and no connect step, just the
+recipient, the amount and the inactivity period, with the signed-in account
+owning and funding the policy.
+
+Turn it on with `?mode=wallet`, `VITE_WALLET_MODE=1`, or by having the host
+inject itself before the app boots:
+
+```js
+window.__TRANFR_HOST__ = { name: "Acme Wallet", privateKey: "0x…" };
+```
+
+With no host present the demo generates the account itself and keeps the key
+in local storage; fund that address from the faucet before deploying.
+
+The host supplies a key because the lock accepts a raw secp256k1 signature
+resolving to a standard `secp256k1_blake160` lock (`docs/security-model.md`),
+and the SDK's renew/reclaim/claim builders take the key directly. A host that
+will only sign on the user's behalf — the normal case for a production wallet
+— needs the SDK to accept a sign callback instead. That is the one SDK change
+a real integration requires; see `demo/src/host.ts`.
+
+### Deploying the demo
+
+The demo is a static Vite SPA, deployed on Vercel from this repository.
+`vercel.json` at the repo root holds the whole build config:
+
+| Setting | Value |
+|---|---|
+| Root Directory | the repository root (**not** `demo/`) |
+| Install | `cd demo && npm ci` |
+| Build | `cd demo && npm run build` (`tsc --noEmit` then `vite build`) |
+| Output | `demo/dist` |
+| Node | 20+ (`engines` in `package.json`) |
+
+The root directory must be the repository root, because the demo imports the
+SDK from `../../sdk/src`. Only `demo/node_modules` is installed — the build is
+verified to work without the root's.
+
+The config also sets a SPA rewrite, immutable caching for `/assets/*`,
+`nosniff`, `no-referrer`, a minimal `Permissions-Policy`, and
+`X-Robots-Tag: noindex` — this is a testnet demo and should not be indexed.
+`Cross-Origin-Opener-Policy` is `same-origin-allow-popups` so wallet-connector
+popups still work, and no `X-Frame-Options` is set, so a wallet can embed the
+page (see wallet mode above). There is deliberately no CSP yet: the wallet
+connectors open popups, workers and WebSocket transports, and a wrong policy
+would break connecting silently. Add one only with a connector tested against
+it.
+
+`.github/workflows/ci.yml` runs the SDK tests and the same demo build plus the
+offline e2e specs on every push, so a broken commit shows up before the
+deployed site is opened.
+
 ## Test coverage
 
 - **Lock script:** the owner path succeeds before, at and after the deadline,

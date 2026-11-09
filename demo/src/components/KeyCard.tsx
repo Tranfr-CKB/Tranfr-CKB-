@@ -14,6 +14,7 @@ export function KeyCard({ title, description, privateKey, identity, onChange }: 
   const [input, setInput] = useState("");
   const [error, setError] = useState<string>();
   const [revealed, setRevealed] = useState(false);
+  const inputId = `${title.toLowerCase().replace(/\s+/g, "-")}-input`;
 
   function importKey() {
     const key = normalizePrivateKey(input);
@@ -27,50 +28,50 @@ export function KeyCard({ title, description, privateKey, identity, onChange }: 
   }
 
   return (
-    <section className="card">
+    <section className="key-card">
       <h3>{title}</h3>
-      <p className="muted">{description}</p>
+      <p>{description}</p>
 
       {privateKey ? (
-        <dl className="fields">
+        <dl className="key-fields">
           <dt>Address</dt>
-          <dd className="mono wrap">{identity?.address ?? "Deriving…"}</dd>
+          <dd className="wrap">{identity?.address ?? "Deriving…"}</dd>
           <dt>Lock hash</dt>
-          <dd className="mono" title={identity?.lockHash}>
-            {identity ? shortHex(identity.lockHash) : "…"}
-          </dd>
+          <dd title={identity?.lockHash}>{identity ? shortHex(identity.lockHash) : "…"}</dd>
           <dt>Private key</dt>
-          <dd className="mono wrap">
+          <dd className="wrap">
             {revealed ? privateKey : "•".repeat(24)}{" "}
-            <button type="button" className="link" onClick={() => setRevealed(!revealed)}>
+            <button type="button" className="link-action" onClick={() => setRevealed(!revealed)}>
               {revealed ? "Hide" : "Reveal"}
             </button>
           </dd>
         </dl>
       ) : (
-        <p className="muted">No key loaded.</p>
+        <p>No key loaded.</p>
       )}
 
-      <div className="row">
-        <button type="button" onClick={() => onChange(generatePrivateKey())}>
+      <div className="key-actions">
+        <button type="button" className="amber-button" onClick={() => onChange(generatePrivateKey())}>
           {privateKey ? "Replace with new key" : "Generate key"}
         </button>
         {privateKey && (
-          <button type="button" className="secondary" onClick={() => onChange(undefined)}>
+          <button type="button" className="ghost-button" onClick={() => onChange(undefined)}>
             Forget key
           </button>
         )}
       </div>
 
-      <div className="row">
+      <div className="key-import">
         <input
+          id={inputId}
+          className="field-control mono"
           type="password"
           placeholder="Or paste a testnet private key"
           value={input}
           onChange={(event) => setInput(event.target.value)}
           aria-label={`${title} private key`}
         />
-        <button type="button" className="secondary" onClick={importKey} disabled={!input.trim()}>
+        <button type="button" className="ghost-button" onClick={importKey} disabled={!input.trim()}>
           Import
         </button>
       </div>

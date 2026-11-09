@@ -13,8 +13,12 @@ import { installTestWallet } from "./test-wallet";
  *
  * `start` drives the UI to generate owner and recipient keys, connect a wallet
  * through the CCC connector, create cells A, B and C with a 1-epoch deadline,
- * renew A, reclaim C, and checks A's Claim button is disabled. `finish` waits
+ * renew A, reclaim C, and checks A's claim button is disabled. `finish` waits
  * until the app shows A and B as claimable, then claims A and reclaims B.
+ *
+ * The UI has two screens (matching the create-tranfr-policy prototype): the
+ * create form, and a per-policy dashboard. Deploying or opening a policy moves
+ * to the dashboard; "Reset" in the dashboard topbar goes back to the form.
  *
  * E2E_DIR receives the browser storage (it holds the demo's testnet keys), the
  * wallet key, screenshots, and a JSON log of every transaction. Keep it out of
@@ -49,21 +53,38 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(DIR, `${name}.png`), fullPage: true });
 }
 
-/** Waits for a new Activity entry with `message` and returns the tx hash it links to. */
+/** Mirrors the app's shortHex() so tracked policies can be found by their label. */
+function short(hex: string, chars = 8): string {
+  return hex.length <= chars * 2 + 2 ? hex : `${hex.slice(0, chars + 2)}…${hex.slice(-chars)}`;
+}
+
+/** Waits for a new activity-ledger entry with `message` and returns the tx hash it links to. */
 async function awaitActivity(page: Page, message: string, timeout = 300_000): Promise<string> {
-  const entry = page.locator("ul.log li", { hasText: message }).first();
+  const entry = page.locator(".ledger-entry", { hasText: message }).first();
   await expect(entry).toBeVisible({ timeout });
   const href = await entry.locator("a").getAttribute("href");
   return href!.slice(href!.lastIndexOf("/") + 1);
 }
 
-/** A cell's card, found by the out-point link in its heading (the Activity panel also links tx hashes). */
-function cellCard(page: Page, txHash: string): Locator {
-  return page.locator("section.card").filter({ has: page.locator(`h3 a[href="${EXPLORER}${txHash}"]`) });
+async function countActivity(page: Page, message: string) {
+  return page.locator(".ledger-entry", { hasText: message }).count();
 }
 
-async function countActivity(page: Page, message: string) {
-  return page.locator("ul.log li", { hasText: message }).count();
+/** A tracked policy's row on the create screen. */
+function trackedRow(page: Page, txHash: string): Locator {
+  return page.locator(".tracked-list li", { hasText: short(txHash) });
+}
+
+/** Back to the create screen from a policy dashboard. */
+async function resetToCreate(page: Page) {
+  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await expect(page.locator(".create-policy-form")).toBeVisible();
+}
+
+/** Opens a tracked policy's dashboard and waits for its status badge. */
+async function openPolicy(page: Page, txHash: string) {
+  await trackedRow(page, txHash).getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page.locator(".active-badge")).toBeVisible({ timeout: 120_000 });
 }
 
 async function fundAddress(address: string, ckb: number) {
@@ -82,9 +103,9 @@ async function fundAddress(address: string, ckb: number) {
 async function connectTestWallet(page: Page) {
   await page.getByRole("button", { name: "Connect wallet", exact: true }).click();
   await page.getByText("Tranfr Test Wallet").click();
-  const panel = page.locator("section.card", { hasText: "Create a Tranfr cell" });
-  await expect(panel.getByRole("button", { name: "Disconnect", exact: true })).toBeVisible();
-  return panel;
+  const wallet = page.locator(".wallet-row");
+  await expect(wallet.getByRole("button", { name: "Disconnect", exact: true })).toBeVisible();
+  return wallet;
 }
 
 test("start: keys, wallet, create A/B/C, renew A, reclaim C", async ({ browser }) => {
@@ -110,7 +131,7 @@ test("start: keys, wallet, create A/B/C, renew A, reclaim C", async ({ browser }
 
   // 1. Keys, generated in the UI.
   for (const title of ["Owner key", "Recipient key"]) {
-    const card = page.locator("section.card", { hasText: title });
+    const card = page.locator(".key-card", { hasText: title });
     await card.getByRole("button", { name: "Generate key", exact: true }).click();
     const address = card.locator("dd").first();
     await expect(address).toContainText("ckt1", { timeout: 30_000 });
@@ -119,47 +140,58 @@ test("start: keys, wallet, create A/B/C, renew A, reclaim C", async ({ browser }
   await persist();
 
   // 2. Wallet through the CCC connector, topped up from the funder (faucet stand-in).
-  let panel = await connectTestWallet(page);
-  const walletAddress = (await panel.locator("span.mono[title]").getAttribute("title"))!;
+  let wallet = await connectTestWallet(page);
+  const walletAddress = (await wallet.locator("span.mono[title]").getAttribute("title"))!;
   log.addresses.wallet = walletAddress;
   record(log, "fund test wallet (setup, not part of the demo)", await fundAddress(walletAddress, 1000));
-  await panel.getByRole("button", { name: "Disconnect", exact: true }).click();
-  panel = await connectTestWallet(page);
-  await expect(panel).toContainText("1000 CKB", { timeout: 60_000 });
+  await wallet.getByRole("button", { name: "Disconnect", exact: true }).click();
+  wallet = await connectTestWallet(page);
+  await expect(wallet).toContainText("1000 CKB", { timeout: 60_000 });
   await shot(page, "01-keys-and-wallet");
 
-  // 3. Create A, B, C through the Create form, each with a 1-epoch deadline.
+  // 3. Create A, B, C through the create form, each with a 1-epoch deadline.
+  // Deploying lands on that policy's dashboard, so Reset returns for the next one.
   for (const name of ["A", "B", "C"]) {
     const before = await countActivity(page, "Tranfr cell created.");
-    await panel.getByLabel("Capacity (CKB)").fill("200");
-    await panel.getByRole("button", { name: "Use 1", exact: true }).click();
-    await panel.getByRole("button", { name: "Create Tranfr cell", exact: true }).click();
-    await expect(page.locator("ul.log li", { hasText: "Tranfr cell created." })).toHaveCount(before + 1, { timeout: 300_000 });
+    await page.getByLabel("Capacity (CKB)").fill("200");
+    await page.getByRole("button", { name: "Use 1", exact: true }).click();
+    await page.getByRole("button", { name: "Deploy policy → ACTIVE", exact: true }).click();
+    await expect(page.locator(".ledger-entry", { hasText: "Tranfr cell created." })).toHaveCount(before + 1, {
+      timeout: 300_000,
+    });
     const txHash = await awaitActivity(page, "Tranfr cell created.");
     log.cells[name] = txHash;
-    record(log, `create ${name} (Create form, wallet-funded)`, txHash);
+    record(log, `create ${name} (create form, wallet-funded)`, txHash);
     await persist();
-    await expect(cellCard(page, txHash).locator(".badge.ok")).toHaveText("Owner only", { timeout: 120_000 });
+    await expect(page.locator(".active-badge")).toHaveText("ACTIVE", { timeout: 120_000 });
+    await shot(page, `02-dashboard-${name}`);
+    await resetToCreate(page);
   }
   await shot(page, "02-three-cells");
 
   // 4. Renew A (heartbeat) with an explicit 1-epoch delay.
-  const cardA = cellCard(page, log.cells.A);
-  await expect(cardA.getByRole("button", { name: "Claim", exact: true })).toBeDisabled();
-  record(log, "claim A before deadline: Claim button disabled in UI", undefined, "recipient key loaded, not yet claimable");
-  await cardA.getByLabel("New delay (epochs, optional)").fill("1");
-  await cardA.getByRole("button", { name: "Renew", exact: true }).click();
+  await openPolicy(page, log.cells.A);
+  await page.getByRole("button", { name: "View as recovery recipient", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Attempt claim", exact: true })).toBeDisabled();
+  record(log, "claim A before deadline: claim button disabled in UI", undefined, "recipient key loaded, not yet claimable");
+  await page.getByRole("button", { name: "View as owner", exact: true }).click();
+  await page.getByRole("button", { name: "Update policy", exact: true }).click();
+  await page.getByLabel("New delay (epochs, optional)").fill("1");
+  await page.getByRole("button", { name: "Renew", exact: true }).click();
   const renewHash = await awaitActivity(page, "Renew committed.");
   log.cells.A = renewHash;
   record(log, "renew A (Renew button)", renewHash);
   await persist();
-  await expect(cellCard(page, renewHash).locator(".badge.ok")).toHaveText("Owner only", { timeout: 120_000 });
+  await expect(page.locator(".active-badge")).toHaveText("ACTIVE", { timeout: 120_000 });
+  await resetToCreate(page);
 
   // 5. Owner reclaims C before its deadline.
-  const cardC = cellCard(page, log.cells.C);
-  await cardC.getByRole("button", { name: "Reclaim", exact: true }).click();
-  record(log, "owner reclaim C before deadline (Reclaim button)", await awaitActivity(page, "Reclaim committed."));
-  await expect(cardC).toHaveCount(0);
+  await openPolicy(page, log.cells.C);
+  await page.getByRole("button", { name: "Reclaim assets", exact: true }).click();
+  record(log, "owner reclaim C before deadline (Reclaim assets button)", await awaitActivity(page, "Reclaim committed."));
+  // Spending a cell untracks it, which returns to the create screen.
+  await expect(page.locator(".create-policy-form")).toBeVisible({ timeout: 120_000 });
+  await expect(trackedRow(page, log.cells.C)).toHaveCount(0);
   delete log.cells.C;
   fs.writeFileSync(LOG(), JSON.stringify(log, null, 2));
   await shot(page, "03-after-renew-and-reclaim");
@@ -177,24 +209,33 @@ test("finish: claim A as recipient, reclaim B as owner after the deadline", asyn
   page.on("pageerror", (err) => console.log("page error:", err.message));
   await page.goto("/");
 
-  const cardA = cellCard(page, log.cells.A);
-  const cardB = cellCard(page, log.cells.B);
-  await expect(cardA.locator(".badge")).toBeVisible({ timeout: 120_000 });
   await shot(page, "03-phase2-start");
-  // The app refreshes status every 30 s; wait for its own "Recipient can claim" badge.
-  for (const card of [cardA, cardB]) {
-    await expect(card.locator(".badge.warn")).toHaveText("Recipient can claim", { timeout: 8 * 60 * 60_000 });
+
+  // The app refreshes status every 30 s; wait for its own "DEADLINE PASSED" badge.
+  for (const name of ["A", "B"] as const) {
+    await openPolicy(page, log.cells[name]);
+    await expect(page.locator(".active-badge.deadline-badge")).toHaveText("DEADLINE PASSED", {
+      timeout: 8 * 60 * 60_000,
+    });
+    if (name === "A") await shot(page, "04-claimable");
+    await resetToCreate(page);
   }
-  await shot(page, "04-claimable");
 
-  await cardA.getByRole("button", { name: "Claim", exact: true }).click();
+  // Recipient claims A.
+  await openPolicy(page, log.cells.A);
+  await page.getByRole("button", { name: "View as recovery recipient", exact: true }).click();
+  await page.getByRole("button", { name: "Attempt claim", exact: true }).click();
   const claimHash = await awaitActivity(page, "Claim committed.");
-  record(log, "recipient claim A after deadline (Claim button)", claimHash);
-  await expect(cardA).toHaveCount(0);
+  record(log, "recipient claim A after deadline (Attempt claim button)", claimHash);
+  await expect(page.locator(".create-policy-form")).toBeVisible({ timeout: 120_000 });
+  await expect(trackedRow(page, log.cells.A)).toHaveCount(0);
 
-  await cardB.getByRole("button", { name: "Reclaim", exact: true }).click();
-  record(log, "owner reclaim B after deadline (Reclaim button)", await awaitActivity(page, "Reclaim committed."));
-  await expect(cardB).toHaveCount(0);
+  // Owner reclaims B, after the deadline.
+  await openPolicy(page, log.cells.B);
+  await page.getByRole("button", { name: "Reclaim assets", exact: true }).click();
+  record(log, "owner reclaim B after deadline (Reclaim assets button)", await awaitActivity(page, "Reclaim committed."));
+  await expect(page.locator(".create-policy-form")).toBeVisible({ timeout: 120_000 });
+  await expect(trackedRow(page, log.cells.B)).toHaveCount(0);
   await shot(page, "05-done");
 
   // Independent check from the chain: the claim paid the recipient's address shown in the UI.

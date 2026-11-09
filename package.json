@@ -29,6 +29,9 @@
     "generate-key": "tsx scripts/deploy.ts --generate-key",
     "deploy": "tsx scripts/deploy.ts"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",

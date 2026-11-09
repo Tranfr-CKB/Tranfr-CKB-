@@ -117,3 +117,11 @@ export function shortHex(hex: string, chars = 8): string {
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/** CKB amount with thousands separators, as the dashboard's asset panel shows it. */
+export function formatCkb(value: ccc.Num): string {
+  const text = ccc.fixedPointToString(value);
+  const [whole, fraction] = text.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction ? `${grouped}.${fraction}` : grouped;
+}

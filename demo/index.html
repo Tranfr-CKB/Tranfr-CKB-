@@ -2,18 +2,36 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#111419" />
+    <!-- A testnet demo: keep it out of search results. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta
+      name="description"
+      content="Tranfr testnet demo — programmable recovery for CKB self-custody. The owner keeps full control; a recovery recipient can claim only after the owner has been inactive past the deadline."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Tranfr — recovery policy demo (CKB Testnet)" />
+    <meta
+      property="og:description"
+      content="Create a recovery policy on CKB Testnet: the owner keeps exclusive control, a recipient can claim only after a defined period of inactivity."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/tranfr-logo.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
-    <title>Tranfr Testnet Demo</title>
+    <title>Tranfr — recovery policy (CKB Testnet)</title>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      This demo needs JavaScript: it builds and signs CKB transactions in the browser.
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

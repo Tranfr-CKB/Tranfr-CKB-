@@ -10,6 +10,9 @@
     "typecheck": "tsc --noEmit",
     "e2e": "NODE_OPTIONS='--loader tsx/esm --no-warnings' playwright test"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@ckb-ccc/connector-react": "2.2.2",
     "@ckb-ccc/core": "1.23.0",
