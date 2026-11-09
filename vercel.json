@@ -1,9 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "cd demo && npm ci",
-  "buildCommand": "cd demo && npm run build",
-  "outputDirectory": "demo/dist",
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
   "cleanUrls": true,
   "trailingSlash": false,
   "rewrites": [{ "source": "/((?!assets/).*)", "destination": "/index.html" }],

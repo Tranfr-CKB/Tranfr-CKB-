@@ -211,19 +211,27 @@ a real integration requires; see `demo/src/host.ts`.
 ### Deploying the demo
 
 The demo is a static Vite SPA, deployed on Vercel from this repository.
-`vercel.json` at the repo root holds the whole build config:
+`vercel.json` at the repo root holds the build config, and its commands run
+from the project's **Root Directory**, which is `demo`:
 
 | Setting | Value |
 |---|---|
-| Root Directory | the repository root (**not** `demo/`) |
-| Install | `cd demo && npm ci` |
-| Build | `cd demo && npm run build` (`tsc --noEmit` then `vite build`) |
-| Output | `demo/dist` |
+| Root Directory (Vercel project setting) | `demo` |
+| Install | `npm ci` |
+| Build | `npm run build` (`tsc --noEmit` then `vite build`) |
+| Output | `dist` |
 | Node | 20+ (`engines` in `package.json`) |
 
-The root directory must be the repository root, because the demo imports the
-SDK from `../../sdk/src`. Only `demo/node_modules` is installed — the build is
-verified to work without the root's.
+Only `demo/node_modules` is installed; the build is verified to work without
+the repo root's.
+
+One Vercel setting matters beyond this file. The demo imports the SDK from
+`../../sdk/src`, which is outside the Root Directory, so **Settings → Build
+and Deployment → "Include source files outside of the Root Directory in the
+Build Step" must be enabled**. Without it the build fails to resolve
+`../../sdk/src/index.js`. The alternative is to set Root Directory to the
+repository root and change the three commands to `cd demo && npm ci`,
+`cd demo && npm run build` and `demo/dist`.
 
 The config also sets a SPA rewrite, immutable caching for `/assets/*`,
 `nosniff`, `no-referrer`, a minimal `Permissions-Policy`, and
