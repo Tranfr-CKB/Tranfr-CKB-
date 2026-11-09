@@ -192,8 +192,16 @@ is the plain owner refund and output 1 is the recipient's own token cell.
 |---|---|---|---|---|---|
 | U1 | Fund recipient (for the UDT claim) | [`0x78857880…e8d9`](https://pudge.explorer.nervos.org/transaction/0x7885788046eca61abb81b0a860d16858e142bb22e82062ea70843ffb4ff2e8d9) | 22,992,230 | 14149+426/1800 | 300 CKB to the recipient |
 | U2 | Create U (UDT Tranfr cell) | [`0x0abf1f20…eb47`](https://pudge.explorer.nervos.org/transaction/0x0abf1f2054e937830d291ef94b55c89699b66884e00f62ce21a8575ccc58eb47) | 22,992,233 | 14149+429/1800 | 200 CKB cell carrying 1,000,000 xUDT, deadline 14150+71/300 |
-| U3 | **Recipient claims U after the deadline** | _pending — claim in progress, hash to follow_ | — | — | Cell capacity **refunded to the owner** as plain CKB; the 1,000,000 xUDT go to the recipient's new token cell (funded by the recipient). RECIPIENT-mode witness. |
-| U4 | Status of U after spending | — | — | — | `getTranfrStatus` reports the cell no longer live. |
+| U3 | **Recipient claims U after the deadline** | [`0x5d0ae5b6…4343`](https://pudge.explorer.nervos.org/transaction/0x5d0ae5b6a41bef91ad839ba9309fa1248732edc002b53a3d94e76e4f04874343) | 23,002,419 | 14156+1426/1800 | Cell's 200 CKB capacity **refunded to the owner** as a plain cell (output 0); the 1,000,000 xUDT go to the recipient's token cell (output 1, 142 CKB funded by the recipient); recipient change in output 2. RECIPIENT-mode witness. |
+
+The claim transaction's outputs, read back from the chain, are exactly what the
+rule requires:
+
+| Output | Capacity | Type | Data | Lock |
+|---|---|---|---|---|
+| 0 | 200 CKB | — (plain) | — | **Owner** (`args 0x09ab2f9d…6ab2`) — the refunded capacity |
+| 1 | 142 CKB | xUDT | `0x40420f00…` = 1,000,000 | **Recipient** — the tokens |
+| 2 | 357.99998306 CKB | — (plain) | — | Recipient — change from the recipient's own funding |
 
 Acceptance for the rule: U3 pays the capacity to the owner (not the recipient)
 and delivers the tokens to the recipient — the behaviour the refund rule adds on

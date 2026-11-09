@@ -269,23 +269,27 @@ fn recipient_allowed_at_and_after_the_deadline() {
 }
 
 /// THE KEY QUESTION. Tranfr needs the recipient's claim to pay the protected
-/// CKB to the recipient. This test states that requirement. If RFC 0039 rule
-/// 1.b.ii holds (the Cheque capacity must go back to the sender, i.e. the
-/// owner), this test FAILS with Cheque error 8 (`SenderCapacityNotSame`), and
-/// the composition cannot deliver plain CKB to the recipient.
+/// CKB to the recipient. But with the recipient on the Cheque *receiver* path,
+/// RFC 0039 rule 1.b.ii requires the Cheque's capacity to be returned to the
+/// *sender* (the owner). Paying it to the recipient is rejected with Cheque
+/// error 8 (`SenderCapacityNotSame`), so the composition cannot deliver plain
+/// CKB to the recipient. This test asserts that rejection.
 #[test]
-fn recipient_claim_pays_the_protected_ckb_to_the_recipient() {
+fn recipient_claim_to_the_recipient_is_blocked_by_cheque_rule() {
     let mut c = Composition::new(Roles::OwnerIsSender);
     let protected = c.protected_cell();
     let key = c.time_lock_cell();
     let recipient = c.recipient_cell();
     let recipient_lock = c.recipient_lock.clone();
 
-    c.verify(
-        vec![plain(protected, 0), proving(key, epoch_since(DEADLINE_EPOCH)), plain(recipient, 0)],
-        vec![(&recipient_lock, PROTECTED + 2 * KEY_CELL)],
-    )
-    .expect("the recipient's claim should pay the protected CKB to the recipient");
+    let err = c
+        .verify(
+            vec![plain(protected, 0), proving(key, epoch_since(DEADLINE_EPOCH)), plain(recipient, 0)],
+            vec![(&recipient_lock, PROTECTED + 2 * KEY_CELL)],
+        )
+        .expect_err("paying the protected CKB to the recipient must be rejected by the Cheque lock");
+    // Cheque error 8 = SenderCapacityNotSame (RFC 0039 rule 1.b.ii).
+    assert!(err.to_string().contains("error code 8"), "expected Cheque error 8, got: {err}");
 }
 
 // ── Roles::OwnerIsReceiver: receiver = owner, sender = TimeLock(recipient) ───────
@@ -307,19 +311,23 @@ fn swapped_roles_recipient_takes_the_ckb_after_the_deadline() {
 }
 
 /// ...but then the owner, now the Cheque receiver, must send the CKB to the
-/// sender's lock, the recipient's Time Lock. This test states the requirement
-/// "the owner can always take their own assets" and is expected to FAIL with
-/// Cheque error 8 (`SenderCapacityNotSame`).
+/// sender's lock (the recipient's Time Lock). The requirement "the owner can
+/// always take their own assets" is rejected by the same rule 1.b.ii with
+/// Cheque error 8 (`SenderCapacityNotSame`): the owner can't take their own
+/// funds back as plain CKB. This test asserts that rejection.
 #[test]
-fn swapped_roles_owner_takes_their_own_ckb() {
+fn swapped_roles_owner_reclaim_is_blocked_by_cheque_rule() {
     let mut c = Composition::new(Roles::OwnerIsReceiver);
     let protected = c.protected_cell();
     let owner = c.owner_cell();
     let owner_lock = c.owner_lock.clone();
 
-    c.verify(
-        vec![plain(protected, 0), proving(owner, 0)],
-        vec![(&owner_lock, PROTECTED + KEY_CELL)],
-    )
-    .expect("the owner should be able to take their own CKB");
+    let err = c
+        .verify(
+            vec![plain(protected, 0), proving(owner, 0)],
+            vec![(&owner_lock, PROTECTED + KEY_CELL)],
+        )
+        .expect_err("the owner reclaiming their own CKB must be rejected by the Cheque lock");
+    // Cheque error 8 = SenderCapacityNotSame (RFC 0039 rule 1.b.ii).
+    assert!(err.to_string().contains("error code 8"), "expected Cheque error 8, got: {err}");
 }

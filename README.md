@@ -111,9 +111,9 @@ limits: [`docs/security-model.md`](docs/security-model.md).
 This is the lock binary **with** the typed-cell capacity-refund rule
 (`docs/spec.md` §5.1). The earlier pre-refund deployment is kept as superseded in
 [`docs/deployment.md`](docs/deployment.md). The lifecycle was re-run against this
-deployment: the full plain lifecycle is complete, and the UDT cell is created
-with its recipient claim (the transaction that exercises the refund rule) as the
-final step — see [`docs/testnet-evidence.md`](docs/testnet-evidence.md).
+deployment, covering a full plain lifecycle and a UDT cell whose recipient claim
+refunds the 200 CKB capacity to the owner and hands the 1,000,000 tokens to the
+recipient — see [`docs/testnet-evidence.md`](docs/testnet-evidence.md).
 
 Build and deploy steps for reproducing these hashes are in
 [`docs/deployment.md`](docs/deployment.md). The build hash has so far been
@@ -139,7 +139,7 @@ Requirements: Rust with the `riscv64imac-unknown-none-elf` target and clang
 ```bash
 npm install
 
-npm run test:contract    # 48 Rust tests: lock unit + integration, since-comparison
+npm run test:contract    # 56 Rust tests: lock unit + integration (incl. the Time Lock + Cheque composition eval), since-comparison
 npm run test:sdk         # 47 SDK tests, incl. the TypeScript since-comparison
 npm run build            # SDK -> sdk/dist (JS + .d.ts); the package entry points
 npm run typecheck
@@ -191,6 +191,14 @@ browser, so use testnet keys only.
   refund or an underpaid one fails, a full refund passes, a plain claim is
   unaffected, and a mixed typed/plain group only needs the typed part refunded.
   All tests use real secp256k1 signatures under `ckb-testtool`.
+- **Composition evaluation:** a `ckb-testtool` suite
+  (`tests/src/composition.rs`) that runs the real deployed Time Lock and Cheque
+  (RFC 0039) testnet binaries, vendored under `contracts/deployed/`. It confirms
+  the vendored binaries' data hashes, exercises both role assignments, and
+  asserts why the composition can't implement Tranfr for plain CKB: the
+  recipient claim and the swapped-role owner reclaim are each rejected with
+  Cheque error 8 (`SenderCapacityNotSame`), and the owner is locked out for 6
+  epochs (error 11). See [`docs/composition-evaluation.md`](docs/composition-evaluation.md).
 - **Shared comparison:** one test suite run against both the Rust and
   TypeScript ports, plus byte-for-byte golden vectors for the args and
   witness encodings.

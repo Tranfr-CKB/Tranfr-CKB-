@@ -71,19 +71,26 @@ case where that behaviour is wanted.
 
 ## Reproducing
 
-The runnable evaluation lives on branch **`composed-locks`**:
+The runnable evaluation is on `main`:
 
-- `tests/src/composition.rs` — the `ckb-testtool` suite, including
+- `tests/src/composition.rs` — the `ckb-testtool` suite (8 tests), including
   `vendored_binaries_match_the_deployed_cells` (asserts the vendored binaries'
-  data hashes), the owner/recipient path tests, and the two tests that state
-  Tranfr's requirements and are expected to fail with Cheque error 8.
+  data hashes match the on-chain ones), the owner/recipient path tests, and the
+  two tests that assert Tranfr's requirements are blocked by Cheque error 8:
+  `recipient_claim_to_the_recipient_is_blocked_by_cheque_rule` and
+  `swapped_roles_owner_reclaim_is_blocked_by_cheque_rule`.
 - `contracts/deployed/time-lock`, `contracts/deployed/cheque-lock` — the vendored
-  testnet binaries.
+  testnet binaries, loaded into the suite with `include_bytes!`.
 
 ```sh
-git switch composed-locks
-cargo test --test tests composition   # or: MODE=release cargo test composition
+cargo test --manifest-path tests/Cargo.toml composition
 ```
+
+All eight tests pass. The finding is not a build or run failure: the two
+"requirement" tests assert, with `expect_err`, that the required spends are
+*rejected* with Cheque error 8, exactly as RFC 0039 rule 1.b.ii dictates. The
+broader `composed-locks` branch keeps the original end-to-end prototype these
+binaries came from.
 
 `ckb-testtool` runs the scripts but not consensus's own `since` check; the scripts
 read each input's declared `since`, and consensus is what stops that value from
